@@ -1,0 +1,15 @@
+.git
+.agents
+.codex
+.aws
+.dev
+**/.env
+**/.venv
+**/__pycache__
+**/*.egg-info
+**/node_modules
+**/dist
+**/playwright-report
+**/test-results
+**/*.sqlite*
+/chains
