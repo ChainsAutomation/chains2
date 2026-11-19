@@ -14,7 +14,8 @@ def check_routes(namespace: str, types: tuple[str, ...]) -> None:
 
 
 class MQTT:
-    def __init__(self, address: str, namespace: str = "chains", types: tuple[str, ...] = ()):
+    def __init__(self, address: str, namespace: str = "chains", types: tuple[str, ...] = (),
+                 *, raw_topics: tuple[str, ...] = ()):
         from paho.mqtt import client as mqtt
 
         check_routes(namespace, types)
@@ -26,7 +27,9 @@ class MQTT:
         elif url.scheme not in {"mqtt", "mqtts"} or not url.hostname:
             raise ValueError("expected mqtt:// or mqtts:// broker URL")
 
-        self._prefix = namespace + "/"
+        if raw_topics and (types or any(not topic or any(char in topic for char in "+#\x00") for topic in raw_topics)):
+            raise ValueError("Raw MQTT subscriptions require exact topics and no Chains types")
+        self._prefix = "" if raw_topics else namespace + "/"
         self._queue: Queue[Delivery] = Queue(maxsize=1024)
         self._overflow = Event()
         self._ready = Event()
@@ -38,7 +41,9 @@ class MQTT:
             protocol=mqtt.MQTTv5,
             transport="unix" if unix else "tcp",
         )
-        filters = [(self._prefix + "msg/" + kind + "/#", 1) for kind in dict.fromkeys(types)]
+        filters = [(topic, 1) for topic in dict.fromkeys(raw_topics)]
+        if not raw_topics:
+            filters = [(self._prefix + "msg/" + kind + "/#", 1) for kind in dict.fromkeys(types)]
         if not filters:
             filters = [(self._prefix + "msg/#", 1)]
 

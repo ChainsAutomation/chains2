@@ -18,9 +18,15 @@ A reading of at least 70 turns the simulated fan on if its reported power is off
 
 For Redis, add `-bus redis://localhost:6379` to the engine, fan, and sensor commands. Also pass `-sensor-broker mqtt://localhost:1883` to the sensor adapter for its device input. Redis is the system bus in this deployment, while MQTT carries the raw sensor feed. The Redis adapter uses a standalone Redis server, one stream for all messages and one stream per message type, and a bounded diagnostic history. Each subscriber follows new messages independently.
 
+## Operator console
+
+Build `./cmd/chainsctl` to inspect state, watch live events and rule runs, or send manual events. The terminal UI combines all three in a keyboard-driven view. The [operator guide](docs/operator-cli.md) covers authority setup, table, JSON and CSV output, filters, and event profiles.
+
 ## Rules
 
 A rule is one indentation-based `.chains` file. Pass a file or a directory containing rule files to `-rules`. Each filename supplies the rule's name.
+
+See [rules engine concurrency and latency](docs/rules-engine-concurrency.md) for event routing, run limits, CPU contention, and multi-process deployment.
 
 ```text
 Event(device_class=light)
@@ -113,4 +119,8 @@ Retained device reports seed state without starting rules. Live button actions c
 
 ## Author a Python service
 
-Start a service with `chains-service MODULE:CLASS`. The [Python SDK reference](docs/sdk-python.md) covers configuration, lifecycle hooks, events, actions, state, and runnable examples.
+Start a service with `chains-service MODULE:CLASS`. The [Python SDK reference](docs/sdk-python.md) covers configuration, lifecycle hooks, events, actions, state, and runnable examples. See [bundled services](docs/services-python.md) for RFLink and Frigate.
+
+## Author a Go service
+
+The [Go SDK guide](docs/sdk-go.md) covers the managed runtime, configuration, and the bundled USB keyboard service.

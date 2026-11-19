@@ -23,9 +23,11 @@ The launcher registers the service, calls the declared `ping` event method, and 
 
 ## Configuration
 
-Environment variables override CLI flags or constructor options, then XDG config, then SDK defaults. JSON config is loaded from `$XDG_CONFIG_HOME/chains/services/<service_type>.<instance>.json`, with system defaults from `$XDG_CONFIG_DIRS`. Select an explicit file with `--config`, `config_path=`, or `CHAINS_SERVICE_CONFIG`.
+Use `chains-service MODULE:CLASS -f west.toml` or set `CHAINS_SERVICE_CONFIG` to select a file. Without an explicit file, load `$XDG_CONFIG_HOME/chains/services/<instance>.toml` over matching system defaults from `$XDG_CONFIG_DIRS`. An explicit file replaces XDG lookup. Precedence is environment, CLI or constructor overrides, user TOML, system TOML, then defaults.
 
-| JSON key / constructor option | CLI flag | Environment | Default |
+Resolve the instance name from `CHAINS_INSTANCE`, then `--instance` or `instance=`, then the explicit filename stem, then the service type. The service type defaults to the snake-case class name and can be overridden as a class attribute. Give concurrently running copies distinct instances or service IDs. Editing the display name leaves the identity intact.
+
+| Key in `[service]` | CLI flag | Environment | Default |
 |---|---|---|---|
 | `uri` | `--bus` | `CHAINS_BUS` | `mqtt://localhost:1883` |
 | `namespace` | `--namespace` | `CHAINS_NAMESPACE` | `chains` |
@@ -33,13 +35,56 @@ Environment variables override CLI flags or constructor options, then XDG config
 | `authority` | `--authority` | `CHAINS_AUTHORITY` | `engine` |
 | `heartbeat_interval` | `--heartbeat-interval` | `CHAINS_HEARTBEAT_INTERVAL` | 15 seconds |
 | `poll_interval` | `--poll-interval` | `CHAINS_POLL_INTERVAL` | 1 second with an `onPoll()` override |
-| `service_id` | `--service-id` | `CHAINS_SERVICE_ID` | Generated ID persisted under `$XDG_STATE_HOME/chains/services` |
-| `name` | `--service-name` | `CHAINS_SERVICE_NAME` | Class name |
-| `instance` (CLI/constructor) | `--instance` | `CHAINS_INSTANCE` | `default` |
+| `service_id` | `--service-id` | `CHAINS_SERVICE_ID` | Generated ID keyed by service type and instance under `$XDG_STATE_HOME/chains/services` |
+| `name` | `--service-name` | `CHAINS_SERVICE_NAME` | Instance name |
 
-`service_type` defaults to the snake-case class name and can be overridden as a class attribute. The service type and instance select the config file and persisted identity. Give concurrently running copies distinct instances or distinct service IDs.
+For programmatic use, pass `config_path=` or supply common keys directly to the constructor.
 
 Supported URI schemes are `mqtt`, `mqtts`, `mqtt+unix`, `redis`, and `rediss`. Both `json` and `cbor` are supported. The SDK sends heartbeats independently of callbacks and polls. The authority marks the service offline after three missed intervals and emits `service.availability.changed` on transitions.
+
+### Service-specific settings
+
+Declare `settings_type` as a dataclass. Nested dataclasses map to TOML sections, and fields can use `str`, `bool`, `int`, `float`, typed lists, string-keyed typed dictionaries, and optional values. Supply a dataclass default if a setting may be omitted. The validated result is available as `self.settings` in `onInit()`.
+
+```python
+from dataclasses import dataclass, field
+from chains_automation import Service
+
+
+@dataclass
+class Metrics:
+    url: str = field(metadata={"help": "Metrics endpoint"})
+    flush_interval: int = 30
+
+
+@dataclass
+class MetricsSettings:
+    metrics: Metrics
+
+
+class MetricsService(Service):
+    settings_type = MetricsSettings
+```
+
+```toml
+[service]
+uri = "mqtts://broker.example"
+name = "West Metrics"
+
+[settings.metrics]
+url = "https://metrics.example"
+flush_interval = 10
+```
+
+Save the class in `metrics_service.py` and the config as `west.toml`. `chains-service metrics_service:MetricsService -f west.toml --metrics-flush-interval 15` overrides the interval. `CHAINS_SETTINGS__METRICS__FLUSH_INTERVAL=20` overrides both. Use raw text for strings and TOML literals for other kinds, for example `true`, `["west", "east"]`, or `{west = 10}`. Nested sections merge by field. Arrays and dictionary values are replaced as a unit. A Python caller can pass a nested mapping such as `settings={"metrics": {"flush_interval": 15}}`.
+
+Name fields in snake case. Each section and field contributes a hyphen-separated component to its flag and an upper-case, double-underscore-separated component to its environment variable. Run `chains-service <service> --help` to see generated flags and help. Keep custom environment variables scoped to the applicable service process.
+
+## Bundled services
+
+Run `chains-service --list` for bundled names, then `chains-service <name> [options]` to launch one. Custom services use `MODULE:CLASS`. Both accept the same TOML, CLI, and environment settings.
+
+To add a bundle, place its implementation in the SDK's `chains_automation.services` package and add a short-name-to-`MODULE:CLASS` entry in `BUNDLED_SERVICES`. The launcher imports the selected implementation on demand. See the [bundled service guide](services-python.md) for RFLink and Frigate configuration and rule examples.
 
 ## Lifecycle and overrides
 
@@ -125,4 +170,4 @@ Run `chains-service observer:Observer`.
 
 Use `Client(transport, source, service_type, encoding="json")` to manage the protocol lifecycle yourself. It exposes `send(message)`, `register(name, *, devices, events=None, actions=None, idempotent_actions=None)`, `event(kind, data, *, device="", schema_version="1")`, `report(device, values, *, cause=None)`, and `outcome(request, status, error="", **result)`. `serve(stop, registration, handler)` registers and dispatches actions to `handler(request, name, args)` until the stop event is set. Use `Service` for reflected return values, state, and heartbeats.
 
-`MQTT(address, namespace="chains", types=())` and `RedisStreams(...)` implement the `Transport` protocol with `publish(topic, data)`, `receive(timeout)`, and `close()`. Receives return `Delivery(topic, data, reset, retained)` or `None` on timeout. A reset signals a subscription discontinuity. Helpers `message(kind, source, data, *, observed_at=None, **fields)`, `route(message)`, `encode(message, encoding="json")`, and `decode(bytes)` build, route, and serialize envelopes.
+`MQTT(address, namespace="chains", types=())` and `RedisStreams(...)` implement the `Transport` protocol with `publish(topic, data)`, `receive(timeout)`, and `close()`. Receives return `Delivery(topic, data, reset, retained)` or `None` on timeout. A reset signals a subscription discontinuity. With `MQTT(..., raw_topics=(...))`, the adapter subscribes to exact upstream topics and delivers their original names. Use this mode with a separate connection from the Chains bus. Helpers `message(kind, source, data, *, observed_at=None, **fields)`, `route(message)`, `encode(message, encoding="json")`, and `decode(bytes)` build, route, and serialize envelopes.

@@ -29,7 +29,14 @@ type Host interface {
 	Act(context.Context, chains.Message, DeviceRef, string, string, map[string]any) (map[string]any, error)
 }
 
+type Trace struct {
+	Type, Rule, Run, Event, Correlation, Summary string
+	Source, Service, Device, Action, Cause       string
+	At                                           time.Time
+}
+
 type Runtime struct {
+	trace    func(Trace)
 	host     Host
 	calendar Calendar
 	log      *slog.Logger
@@ -59,6 +66,7 @@ type wait struct {
 }
 type execution struct {
 	runtime  *Runtime
+	runID    string
 	rule     Rule
 	env      map[string]any
 	last     chains.Message
@@ -67,9 +75,12 @@ type execution struct {
 	ctx      context.Context
 }
 
-func New(ctx context.Context, host Host, calendar Calendar, log *slog.Logger, rules []Rule) (*Runtime, error) {
+func New(ctx context.Context, host Host, calendar Calendar, log *slog.Logger, rules []Rule, traces ...func(Trace)) (*Runtime, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	r := &Runtime{host: host, calendar: calendar, log: log, ctx: ctx, cancel: cancel, openings: map[string][]*opening{}, waits: map[string]map[*wait]bool{}}
+	if len(traces) > 0 {
+		r.trace = traces[0]
+	}
 	var schedules []*opening
 	seen := map[string]bool{}
 	startupError := func(rule Rule, err error) (*Runtime, error) {
@@ -172,11 +183,15 @@ func matches(pattern, fields map[string]any) bool {
 
 func (r *Runtime) start(o *opening, m chains.Message) {
 	if o.running >= o.rule.Concurrency {
+		r.emitTrace("rule.skipped", o.rule.Name, "", m, "at capacity")
 		r.log.Debug("rule at capacity", "rule", o.rule.Name, "event", m.ID)
 		return
 	}
 	o.running++
 	e := &execution{runtime: r, rule: o.rule, env: maps.Clone(o.initial), ctx: r.ctx}
+	if r.trace != nil {
+		e.runID = chains.ID()
+	}
 	e.match(m)
 	if o.binding != "" {
 		e.env[o.binding] = eventFields(m)
@@ -185,12 +200,47 @@ func (r *Runtime) start(o *opening, m chains.Message) {
 	go func() {
 		defer r.wg.Done()
 		defer func() { r.mu.Lock(); o.running--; r.mu.Unlock() }()
+		var started time.Time
+		if r.trace != nil {
+			started = time.Now()
+			r.emitTrace("rule.started", o.rule.Name, e.runID, m, "")
+		}
 		r.log.Debug("rule matched", "rule", o.rule.Name, "event", m.ID)
 		err := e.block(o.body)
+		kind, summary := "rule.finished", ""
+		if r.trace != nil {
+			summary = time.Since(started).String()
+			if errors.Is(err, context.DeadlineExceeded) {
+				kind = "rule.timeout"
+			} else if errors.Is(err, context.Canceled) {
+				kind = "rule.cancelled"
+			} else if err != nil && !errors.Is(err, errReturn) {
+				kind = "rule.failed"
+			}
+			if err != nil && !errors.Is(err, errReturn) {
+				summary += " · " + err.Error()
+			}
+			r.emitTrace(kind, o.rule.Name, e.runID, m, summary)
+		}
 		if err != nil && !errors.Is(err, errReturn) {
 			r.log.Warn("rule exited", "rule", o.rule.Name, "event", m.ID, "error", err)
 		}
 	}()
+}
+
+func (r *Runtime) emitTrace(kind, rule, run string, m chains.Message, summary string) {
+	if r.trace == nil {
+		return
+	}
+	service := m.ServiceID
+	if service == "" {
+		service = m.Source
+	}
+	correlation := m.CorrelationID
+	if correlation == "" {
+		correlation = m.ID
+	}
+	r.trace(Trace{Type: kind, Rule: rule, Run: run, Event: m.ID, Correlation: correlation, Source: m.Source, Service: service, Device: m.DeviceID, Action: m.ActionID, Cause: m.CausationID, Summary: summary, At: time.Now().UTC()})
 }
 
 func (r *Runtime) schedule(o *opening) {
@@ -218,6 +268,9 @@ func (r *Runtime) schedule(o *opening) {
 }
 
 func (e *execution) match(m chains.Message) {
+	if !e.deadline.IsZero() {
+		e.runtime.emitTrace("rule.resumed", e.rule.Name, e.runID, m, "")
+	}
 	e.last = m
 	if e.deadline.IsZero() {
 		e.deadline = time.Now().Add(e.rule.Timeout)

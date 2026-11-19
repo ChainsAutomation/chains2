@@ -1,4 +1,3 @@
-import json
 import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -43,9 +42,9 @@ class LauncherTest(TestCase):
         with TemporaryDirectory() as root, patch.dict(os.environ, {
             "XDG_CONFIG_HOME": root, "XDG_STATE_HOME": root, "XDG_CONFIG_DIRS": root,
         }, clear=True), patch.dict("sys.modules", {"fixture_service": module}):
-            file = Path(root) / "chains/services/ping.default.json"
+            file = Path(root) / "chains/services/ping.toml"
             file.parent.mkdir(parents=True)
-            file.write_text(json.dumps({"uri": "mqtts://from-file", "poll_interval": 12}))
+            file.write_text('[service]\nuri = "mqtts://from-file"\npoll_interval = 12\n')
             args = ["fixture_service:Ping", "--emit", "ping"]
             main(args)
             cli = ["--bus", "mqtts://from-cli", "--poll-interval", "2.5"]
@@ -114,9 +113,12 @@ class PollTest(TestCase):
                 finished.set()
                 self.stop()
 
-        with self.assertLogs("chains_automation.service", level="ERROR"):
-            with Poll(transport=broker, service_id="poller", poll_interval=0.05):
-                self.assertTrue(finished.wait(2))
+        with TemporaryDirectory() as root:
+            file = Path(root) / "poller.toml"
+            file.write_text("[service]\npoll_interval = 0.05\n", encoding="utf-8")
+            with self.assertLogs("chains_automation.service", level="ERROR"):
+                with Poll(transport=broker, service_id="poller", config_path=file):
+                    self.assertTrue(finished.wait(2))
         self.assertEqual(broker.sent.get().get("type"), "service.registered")
         self.assertEqual(len(times), 2)
         self.assertGreaterEqual(times[1] - times[0], 0.045)

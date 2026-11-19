@@ -64,6 +64,7 @@ class Service:
     """Base class for a Chains integration. Own hardware in lifecycle hooks."""
 
     service_type = None
+    settings_type = None
     attributes = ()
 
     def __init_subclass__(cls, **kwargs):
@@ -72,12 +73,15 @@ class Service:
             if name.startswith("event_") and callable(method):
                 setattr(cls, name, event_method(method))
 
-    def __init__(self, uri=None, *, config_path=None, transport=None, **options):
+    def __init__(self, uri=None, *, config_path=None, transport=None, settings=None, **options):
         inferred = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", type(self).__name__).lower()
         self.service_type = self.service_type or inferred
         if not isinstance(self.service_type, str) or not IDENTIFIER.fullmatch(self.service_type) or self.service_type in {".", ".."}:
             raise ValueError("Invalid service type")
-        self.config = ServiceConfig.load(self.service_type, config_path, uri=uri, **options)
+        self.config, self.settings = ServiceConfig.load(
+            self.service_type, config_path, uri=uri, settings_type=self.settings_type,
+            settings=settings, **options,
+        )
         self.transport_factory = self.open_transport
         self._subscriptions = set()
         self._injected_transport = transport
@@ -178,10 +182,10 @@ class Service:
                 result.setdefault(name, {})[version] = schema
             return result
 
-        if not self.config.service_id:
+        if self.config.service_id == "":
             self.config.service_id = stable_identity(self.service_type, self.config.instance)
         return {"uuid": self.config.service_id, "service_type": self.service_type,
-                "name": self.config.name or type(self).__name__, "devices": devices,
+                "name": self.config.name or self.config.instance, "devices": devices,
                 "events": versions(schemas["event"]), "actions": versions(schemas["action"]),
                 "idempotent_actions": sorted(idempotent)}
 
@@ -205,8 +209,9 @@ class Service:
             raise RuntimeError("A service instance can only be started once")
         self._started = True
         try:
-            if not self.config.service_id:
+            if self.config.service_id == "":
                 self.config.service_id = stable_identity(self.service_type, self.config.instance)
+            self.config.validate()
             self.onInit()
             self.config.validate()
             self._registration = self.describe()

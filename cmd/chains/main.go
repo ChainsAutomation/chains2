@@ -80,6 +80,9 @@ func openBus(ctx context.Context, address, namespace string, sub bus.Subscriptio
 }
 
 func runEngine(ctx context.Context, c config) error {
+	if c.OperatorAPI && (c.ID != c.Authority || c.Listen == "" || c.Token == "") {
+		return errors.New("operator API requires the authority, HTTP listen address, and token")
+	}
 	if err := c.Z2M.Validate(); err != nil {
 		return err
 	}
@@ -136,7 +139,14 @@ func runEngine(ctx context.Context, c config) error {
 	defer b.Close()
 	lifetime, cancel := context.WithCancel(ctx)
 	defer cancel()
-	e, err := engine.Open(lifetime, b, engine.Options{ID: c.ID, AuthorityID: c.Authority, Database: c.Database, Rules: compiled, Calendar: cal, LocalService: bridge, Encoding: chains.Encoding(c.Encoding)})
+	e, err := engine.Open(lifetime, b, engine.Options{
+		ID: c.ID, AuthorityID: c.Authority, Database: c.Database, Rules: compiled, Calendar: cal,
+		LocalService: bridge, Encoding: chains.Encoding(c.Encoding),
+		OperatorAPI: c.OperatorAPI, OperatorTrace: c.OperatorTrace,
+		OpenOperatorBus: func(ctx context.Context, sub bus.Subscription) (bus.Bus, error) {
+			return openBus(ctx, c.Bus, c.Namespace, sub)
+		},
+	})
 	if err != nil {
 		return err
 	}

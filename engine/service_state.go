@@ -8,6 +8,7 @@ import (
 
 	chains "chains-automation"
 	"chains-automation/bus"
+	"chains-automation/operator"
 )
 
 type presence struct {
@@ -37,6 +38,9 @@ func (e *Engine) heartbeat(ctx context.Context, m chains.Message, now time.Time)
 		return nil
 	}
 	e.availability[m.Source] = presence{instance: ping.InstanceID, deadline: now.Add(3 * time.Duration(ping.Interval) * time.Second), observed: m.ObservedAt}
+	if e.operator != nil && e.operator.feed != nil && known && previous.instance != ping.InstanceID {
+		e.offerTrace(operator.Record{At: m.ObservedAt, Type: "service.restarted", Source: m.Source, Service: m.Source, Cause: m.ID, Correlation: m.ID, Summary: "Service process instance changed"})
+	}
 	if !known || previous.deadline.IsZero() {
 		return e.publishAvailability(ctx, m.Source, availability{true, ping.InstanceID}, &m)
 	}

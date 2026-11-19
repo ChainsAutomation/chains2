@@ -21,11 +21,16 @@ type HTTPSource struct {
 
 func (e *Engine) HTTP(token string, mappings map[string]HTTPSource) http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /events/{mapping}", func(w http.ResponseWriter, r *http.Request) {
-		if token == "" || subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte("Bearer "+token)) != 1 {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
+	auth := func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if token == "" || subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte("Bearer "+token)) != 1 {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			next(w, r)
 		}
+	}
+	mux.HandleFunc("POST /events/{mapping}", auth(func(w http.ResponseWriter, r *http.Request) {
 		if !e.ready.Load() {
 			http.Error(w, "state view is synchronizing", http.StatusServiceUnavailable)
 			return
@@ -40,22 +45,10 @@ func (e *Engine) HTTP(token string, mappings map[string]HTTPSource) http.Handler
 			http.Error(w, "invalid request body", http.StatusBadRequest)
 			return
 		}
-		var value any
-		if err = json.Unmarshal(raw, &value); err != nil {
-			value = string(raw)
+		if !json.Valid(raw) {
+			raw, _ = json.Marshal(string(raw))
 		}
-		data := value
-		if mapping.Attribute != "" {
-			data = map[string]any{mapping.Attribute: value}
-		}
-		m, err := chains.New(mapping.Type, mapping.Source, data)
-		if err == nil {
-			m.DeviceID, m.SchemaVersion = mapping.Device, mapping.SchemaVersion
-			err = m.Validate(time.Now())
-		}
-		if err == nil {
-			m, err = e.validateEvent(m)
-		}
+		m, err := e.mappedEvent(mapping, raw)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -67,6 +60,23 @@ func (e *Engine) HTTP(token string, mappings map[string]HTTPSource) http.Handler
 			return
 		}
 		w.WriteHeader(http.StatusAccepted)
-	})
+	}))
+	e.operatorRoutes(mux, auth, mappings)
 	return mux
+}
+
+func (e *Engine) mappedEvent(mapping HTTPSource, value json.RawMessage) (chains.Message, error) {
+	data := any(value)
+	if mapping.Attribute != "" {
+		data = map[string]json.RawMessage{mapping.Attribute: value}
+	}
+	m, err := chains.New(mapping.Type, mapping.Source, data)
+	if err != nil {
+		return m, err
+	}
+	m.DeviceID, m.SchemaVersion = mapping.Device, mapping.SchemaVersion
+	if err = m.Validate(time.Now()); err != nil {
+		return m, err
+	}
+	return e.validateEvent(m)
 }

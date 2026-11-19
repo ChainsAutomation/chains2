@@ -7,12 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	chains "chains-automation"
 	"chains-automation/bus"
+	"chains-automation/operator"
 	"chains-automation/rules"
 	"chains-automation/sdk"
 	"chains-automation/state"
@@ -20,15 +22,18 @@ import (
 )
 
 type Options struct {
-	ID            string
-	AuthorityID   string
-	Database      string
-	Rules         []rules.Rule
-	Calendar      rules.Calendar
-	Encoding      chains.Encoding
-	ActionTimeout time.Duration
-	Log           *slog.Logger
-	LocalService  LocalService
+	ID              string
+	AuthorityID     string
+	Database        string
+	Rules           []rules.Rule
+	Calendar        rules.Calendar
+	Encoding        chains.Encoding
+	ActionTimeout   time.Duration
+	Log             *slog.Logger
+	LocalService    LocalService
+	OperatorAPI     bool
+	OperatorTrace   bool
+	OpenOperatorBus func(context.Context, bus.Subscription) (bus.Bus, error)
 }
 
 type Engine struct {
@@ -52,6 +57,7 @@ type Engine struct {
 	schemas         sync.Map
 	local           *hostedService
 	availability    map[string]presence
+	operator        *operatorMonitor
 }
 
 type pending struct {
@@ -64,6 +70,12 @@ type pending struct {
 func Open(ctx context.Context, b bus.Bus, o Options) (*Engine, error) {
 	if !chains.Segment(o.ID) || !chains.Segment(o.AuthorityID) {
 		return nil, errors.New("invalid engine or authority ID")
+	}
+	if o.OperatorAPI && o.ID != o.AuthorityID {
+		return nil, errors.New("operator API requires the authority")
+	}
+	if (o.OperatorAPI || o.OperatorTrace) && o.OpenOperatorBus == nil {
+		return nil, errors.New("operator monitoring requires a separate bus connection")
 	}
 	log := o.Log
 	if log == nil {
@@ -89,7 +101,17 @@ func Open(ctx context.Context, b bus.Bus, o Options) (*Engine, error) {
 	if e.actionTimeout <= 0 {
 		e.actionTimeout = 10 * time.Second
 	}
-	r, err := rules.New(ctx, e, o.Calendar, log, o.Rules)
+	var trace func(rules.Trace)
+	if o.OperatorAPI || o.OperatorTrace {
+		e.operator = &operatorMonitor{open: o.OpenOperatorBus, trace: make(chan operator.Record, 512)}
+		if o.OperatorAPI {
+			e.operator.feed = operator.NewFeed()
+		}
+		if o.OperatorTrace {
+			trace = e.ruleTrace
+		}
+	}
+	r, err := rules.New(ctx, e, o.Calendar, log, o.Rules, trace)
 	if err != nil {
 		if e.authority != nil {
 			e.authority.Close()
@@ -115,6 +137,8 @@ func (e *Engine) ResolveDevice(serviceName, deviceName string) (rules.DeviceRef,
 }
 
 func (e *Engine) Run(ctx context.Context) error {
+	stopOperator := e.startOperator(ctx)
+	defer stopOperator()
 	stopLocal := e.startLocal(ctx)
 	defer stopLocal()
 	var local <-chan localInput
@@ -214,6 +238,8 @@ func (e *Engine) requestSnapshot(ctx context.Context) {
 
 func (e *Engine) handle(ctx context.Context, m chains.Message) error {
 	switch m.Type {
+	case operator.TraceType:
+		return nil
 	case chains.Heartbeat:
 		if e.authority != nil {
 			return e.heartbeat(ctx, m, time.Now())
@@ -347,6 +373,11 @@ func (e *Engine) register(ctx context.Context, m chains.Message) error {
 			return errors.New("local service ID is already registered to a different service type")
 		}
 	}
+	for name := range s.Events {
+		if name == operator.TraceType || strings.HasPrefix(name, "manual.") {
+			return errors.New("reserved event type")
+		}
+	}
 	for _, set := range []map[string]map[string]json.RawMessage{s.Events, s.Actions} {
 		for name, versions := range set {
 			if !chains.Segment(name) || len(versions) == 0 {
@@ -465,6 +496,9 @@ func (e *Engine) validate(raw, body json.RawMessage) error {
 }
 
 func (e *Engine) validateEvent(m chains.Message) (chains.Message, error) {
+	if strings.HasPrefix(m.Type, "manual.") {
+		return e.normalizeManual(m)
+	}
 	s, ok := e.view.Service(m.Source)
 	if !ok {
 		return m, errors.New("event source is unregistered")
@@ -531,6 +565,7 @@ func (e *Engine) Act(ctx context.Context, parent chains.Message, ref rules.Devic
 	deadline, _ := ctx.Deadline()
 	m.ExpiresAt = &deadline
 	if e.local != nil && target == e.local.service.ID() {
+		e.traceAction(m, chains.Request, name)
 		return e.actLocal(ctx, m), nil
 	}
 	p := &pending{target: target, requestID: m.ID, result: make(chan chains.Result, 1), accepted: make(chan struct{}, 1)}
@@ -539,6 +574,7 @@ func (e *Engine) Act(ctx context.Context, parent chains.Message, ref rules.Devic
 	e.mu.Unlock()
 	defer func() { e.mu.Lock(); delete(e.actions, m.ActionID); e.mu.Unlock() }()
 	if err = e.node.Send(ctx, m); err != nil {
+		e.traceAction(m, "action.publish_failed", err.Error())
 		return nil, err
 	}
 	e.log.Debug("action requested", "action", m.ActionID, "cause", m.CausationID, "target", state.Address(target, id))
@@ -577,6 +613,11 @@ func (e *Engine) Act(ctx context.Context, parent chains.Message, ref rules.Devic
 				e.log.Debug("action retry publication failed", "action", m.ActionID, "error", err)
 			}
 		case <-ctx.Done():
+			kind := "action.timed_out"
+			if errors.Is(ctx.Err(), context.Canceled) {
+				kind = "action.cancelled"
+			}
+			e.traceAction(m, kind, ctx.Err().Error())
 			e.log.Debug("action timed out", "action", m.ActionID, "cause", m.CausationID)
 			return map[string]any{"status": chains.TimedOut, "action_id": m.ActionID}, nil
 		}
