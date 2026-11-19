@@ -16,6 +16,7 @@ dependencies = [
 
 [project.optional-dependencies]
 rflink = ["pyserial>=3.5,<4"]
+radicale = ["icalendar>=6,<8", "recurring-ical-events>=3,<4", "vobject>=0.9.9,<1", "defusedxml>=0.7,<1"]
 
 [project.scripts]
 chains-service = "chains_automation.__main__:console_main"

@@ -342,15 +342,34 @@ class Service:
         if context is None or context[0] is not self:
             raise RuntimeError("_send_event() must be called in an event_ method")
         _, cap, arguments = context
-        data = {**arguments, **fields}
+        self._send(self._event_message(cap, {**arguments, **fields}, _device,
+                                       cause=_action.get()))
+
+    @staticmethod
+    def _action_context():
+        """Return a serializable snapshot of the active action, if any."""
+        return deepcopy(_action.get())
+
+    def _prepare_event(self, method, data, *, device=None, cause=None, event_id=None):
+        """Build a validated event envelope for deferred publication."""
+        return self._event_message(self._events[method], data, device, cause=cause,
+                                   event_id=event_id)
+
+    def _event_message(self, cap, data, device, *, cause=None, event_id=None):
         cap.validator.validate(data)
-        device = _device or cap.device or self._default_device
+        device = device or cap.device or self._default_device
         if device not in self._devices:
             raise ValueError("Unknown event device")
-        request = _action.get()
-        self._send(message(cap.name, self.config.service_id, data, device_id=device,
-                           service_type=self.service_type, schema_version=cap.version,
-                           **(caused_by(request) if request else {})))
+        metadata = caused_by(cause) if cause else {}
+        if cause and cause.get("action_id"):
+            metadata["action_id"] = cause["action_id"]
+        result = message(cap.name, self.config.service_id, data, device_id=device,
+                         service_type=self.service_type, schema_version=cap.version, **metadata)
+        if event_id is not None:
+            if not IDENTIFIER.fullmatch(event_id):
+                raise ValueError("Invalid event ID")
+            result["id"] = event_id
+        return result
 
     def _heartbeat(self):
         interval = self.config.heartbeat_interval

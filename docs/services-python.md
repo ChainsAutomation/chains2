@@ -48,3 +48,8 @@ Run `chains-service frigate -f frigate.toml`. If Chains also uses MQTT on the sa
 ```text
 review = Event(type="frigate.review", phase=new, camera=front_door, severity=alert)
 ```
+
+
+## Radicale
+
+Run `chains-service radicale` with the `radicale` extra to sync CalDAV calendars and tasks and CardDAV address books. See the [Radicale guide](radicale.md) for collection aliases, alarms, write permissions, and rule examples.

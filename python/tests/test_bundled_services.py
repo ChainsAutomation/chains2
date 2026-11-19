@@ -21,6 +21,7 @@ class BundledServicesTest(TestCase):
             main(["--list"])
         self.assertIn("frigate", output.getvalue().splitlines())
         self.assertIn("rflink", output.getvalue().splitlines())
+        self.assertIn("radicale", output.getvalue().splitlines())
 
     def test_rflink_fields_and_signed_measurements(self):
         raw = b"20;A2;UPM/Esic;ID=0001;SWITCH=02;CMD=SET_LEVEL=14;TEMP=80DC;HUM=42;BAT=LOW;EXTRA=ab;\r"

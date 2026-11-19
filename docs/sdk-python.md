@@ -84,7 +84,7 @@ Name fields in snake case. Each section and field contributes a hyphen-separated
 
 Run `chains-service --list` for bundled names, then `chains-service <name> [options]` to launch one. Custom services use `MODULE:CLASS`. Both accept the same TOML, CLI, and environment settings.
 
-To add a bundle, place its implementation in the SDK's `chains_automation.services` package and add a short-name-to-`MODULE:CLASS` entry in `BUNDLED_SERVICES`. The launcher imports the selected implementation on demand. See the [bundled service guide](services-python.md) for RFLink and Frigate configuration and rule examples.
+To add a bundle, place its implementation in the SDK's `chains_automation.services` package and add a short-name-to-`MODULE:CLASS` entry in `BUNDLED_SERVICES`. The launcher imports the selected implementation on demand. See the [bundled service guide](services-python.md) for RFLink, Frigate, and Radicale configuration and rule examples.
 
 ## Lifecycle and overrides
 
@@ -107,6 +107,7 @@ Use `run(emit=None)` or a context manager when embedding a service. Each instanc
 - `action_<name>(...)` declares an action. The SDK validates incoming arguments, sends acceptance, invokes the method, and sends a completion with its JSON-compatible return value under `value`. An exception produces a failed outcome. Action requests are handled serially and recent duplicates reuse their stored outcome.
 - `@capability(name=None, version="1", schema=None, device=None, idempotent=False)` overrides discovery metadata. Mark an action idempotent only when retrying it is safe. Without a device override, capabilities use the device with ID `default`, or the first declared device.
 - `describe()` returns the registration offline, including identity, devices, versioned schemas, and idempotent actions. Schemas normally come from named parameters and type hints. Supported annotations include primitives, unions, `Literal`, lists, and string-keyed dictionaries. Unannotated parameters are unconstrained. Use an explicit JSON Schema for other shapes.
+- A service with a durable publication queue can call `_prepare_event(method, data, device=..., event_id=..., cause=...)` to build a validated envelope, then publish it with `_send(envelope)`. Capture `_action_context()` inside an action to retain its causation and correlation when a background worker publishes later.
 
 ## Reported state
 
