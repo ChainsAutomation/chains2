@@ -1,0 +1,26 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chains
+spec:
+  template:
+    spec:
+      initContainers:
+        - name: wait-for-mqtt
+          image: busybox:1.37
+          command: ["sh", "-ec", "until nc -z mosquitto 1883; do sleep 1; done"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+      containers:
+        - name: authority
+          env:
+            - name: CHAINS_RULES
+              value: /etc/chains/humidity.chains
+            - name: CHAINS_OPERATOR_WEB_LOOPBACK_PROXY
+              value: "true"
+      volumes:
+        - name: config
+          configMap:
+            name: chains-humidity

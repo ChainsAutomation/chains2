@@ -1,0 +1,17 @@
+{
+  "id": "engine",
+  "authority": "engine",
+  "namespace": "chains",
+  "operator_api": true,
+  "operator_web": true,
+  "operator_trace": true,
+  "http": {
+    "humidity": {
+      "source": "humidity-sensor",
+      "device": "bathroom-sensor",
+      "type": "humidity.reported",
+      "schema_version": "1",
+      "attribute": "value"
+    }
+  }
+}

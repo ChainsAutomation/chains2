@@ -2,6 +2,12 @@
 
 Chains runs automation rules over a single MQTT 5 or Redis Streams bus. A Go engine accepts events, maintains a revisioned view of reported state, and sends actions to registered integrations. Each deployment has one state authority and can run additional engines with their own rules and subscriptions.
 
+## Install and run
+
+- [Local development](docs/getting-started.md) starts the native demo, builds the UI, and verifies the humidity rule.
+- [Docker and Compose](docs/docker-compose.md) covers both images and MQTT and Redis examples.
+- [Kubernetes](docs/kubernetes.md) covers Kustomize, persistent state, separate Pods, and node-attached integrations.
+
 ## Run the humidity example
 
 Build on Linux with Go 1.23+, a C compiler, pkg-config, and the development headers for SQLite and libmosquitto. Start a local MQTT 5 broker, then run the engine, simulated fan, and sensor adapter in separate terminals.

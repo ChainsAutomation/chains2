@@ -15,28 +15,29 @@ import (
 )
 
 type config struct {
-	Z2M           z2m.Config                   `json:"z2m"`
-	ID            string                       `json:"id"`
-	Authority     string                       `json:"authority"`
-	Bus           string                       `json:"bus"`
-	Namespace     string                       `json:"namespace"`
-	Database      string                       `json:"database"`
-	Rules         string                       `json:"rules"`
-	Encoding      string                       `json:"encoding"`
-	Listen        string                       `json:"listen"`
-	Token         string                       `json:"token"`
-	Timezone      string                       `json:"timezone"`
-	Week          string                       `json:"week"`
-	Scheduler     bool                         `json:"scheduler"`
-	OperatorWeb   bool                         `json:"operator_web"`
-	OperatorAPI   bool                         `json:"operator_api"`
-	OperatorTrace bool                         `json:"operator_trace"`
-	Debug         bool                         `json:"debug"`
-	Types         []string                     `json:"types"`
-	HTTP          map[string]engine.HTTPSource `json:"http"`
-	Sensor        sensorMapping                `json:"sensor"`
-	SensorBroker  string                       `json:"sensor_broker"`
-	SensorTopic   string                       `json:"sensor_topic"`
+	Z2M                      z2m.Config                   `json:"z2m"`
+	ID                       string                       `json:"id"`
+	Authority                string                       `json:"authority"`
+	Bus                      string                       `json:"bus"`
+	Namespace                string                       `json:"namespace"`
+	Database                 string                       `json:"database"`
+	Rules                    string                       `json:"rules"`
+	Encoding                 string                       `json:"encoding"`
+	Listen                   string                       `json:"listen"`
+	Token                    string                       `json:"token"`
+	Timezone                 string                       `json:"timezone"`
+	Week                     string                       `json:"week"`
+	Scheduler                bool                         `json:"scheduler"`
+	OperatorWebLoopbackProxy bool                         `json:"operator_web_loopback_proxy"`
+	OperatorWeb              bool                         `json:"operator_web"`
+	OperatorAPI              bool                         `json:"operator_api"`
+	OperatorTrace            bool                         `json:"operator_trace"`
+	Debug                    bool                         `json:"debug"`
+	Types                    []string                     `json:"types"`
+	HTTP                     map[string]engine.HTTPSource `json:"http"`
+	Sensor                   sensorMapping                `json:"sensor"`
+	SensorBroker             string                       `json:"sensor_broker"`
+	SensorTopic              string                       `json:"sensor_topic"`
 }
 
 func xdg(env, fallback string) string {
@@ -62,6 +63,7 @@ func readConfig(args []string) (config, error) {
 	}
 	z2mEnabled := f.Bool("z2m-enabled", false, "enable the Zigbee2MQTT bridge")
 	scheduler := f.Bool("scheduler", c.Scheduler, "enable calendar rules")
+	operatorWebLoopbackProxy := f.Bool("operator-web-loopback-proxy", false, "allow loopback browser origins through container forwarding")
 	operatorWeb := f.Bool("operator-web", false, "serve the bundled web console")
 	operatorAPI := f.Bool("operator-api", false, "enable the authority operator API")
 	operatorTrace := f.Bool("operator-trace", false, "emit rule lifecycle telemetry")
@@ -106,6 +108,8 @@ func readConfig(args []string) (config, error) {
 			c.Z2M.Enabled = *z2mEnabled
 		case "scheduler":
 			c.Scheduler = *scheduler
+		case "operator-web-loopback-proxy":
+			c.OperatorWebLoopbackProxy = *operatorWebLoopbackProxy
 		case "operator-web":
 			c.OperatorWeb = *operatorWeb
 		case "operator-api":
@@ -124,7 +128,7 @@ func readConfig(args []string) (config, error) {
 			*ptr = value
 		}
 	}
-	for name, ptr := range map[string]*bool{"CHAINS_Z2M_ENABLED": &c.Z2M.Enabled, "CHAINS_SCHEDULER": &c.Scheduler, "CHAINS_DEBUG": &c.Debug, "CHAINS_OPERATOR_WEB": &c.OperatorWeb, "CHAINS_OPERATOR_API": &c.OperatorAPI, "CHAINS_OPERATOR_TRACE": &c.OperatorTrace} {
+	for name, ptr := range map[string]*bool{"CHAINS_Z2M_ENABLED": &c.Z2M.Enabled, "CHAINS_SCHEDULER": &c.Scheduler, "CHAINS_DEBUG": &c.Debug, "CHAINS_OPERATOR_WEB_LOOPBACK_PROXY": &c.OperatorWebLoopbackProxy, "CHAINS_OPERATOR_WEB": &c.OperatorWeb, "CHAINS_OPERATOR_API": &c.OperatorAPI, "CHAINS_OPERATOR_TRACE": &c.OperatorTrace} {
 		if value, ok := os.LookupEnv(name); ok {
 			if err := json.Unmarshal([]byte(value), ptr); err != nil {
 				return c, fmt.Errorf("%s: %w", name, err)

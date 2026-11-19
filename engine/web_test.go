@@ -28,7 +28,7 @@ func TestWebConsole(t *testing.T) {
 	}
 	defer e.Close()
 	assets := fstest.MapFS{"index.html": {Data: []byte("Chains UI")}, "assets/app.js": {Data: []byte("export {}")}}
-	handler := e.WebHTTP("secret", nil, assets)
+	handler := e.WebHTTP("secret", nil, assets, false)
 	call := func(h http.Handler, method, path, origin, body, bearer string, cookie *http.Cookie, want int) *httptest.ResponseRecorder {
 		t.Helper()
 		req := httptest.NewRequest(method, "http://127.0.0.1"+path, strings.NewReader(body))
@@ -102,7 +102,7 @@ func TestBrowserOrigin(t *testing.T) {
 		req := httptest.NewRequest("POST", "http://"+test.host+"/operator/v1/session", nil)
 		req.Header.Set("Origin", test.origin)
 		req.RemoteAddr = test.remote
-		if secure, allowed := webOrigin(req); secure != test.secure || allowed != test.allowed {
+		if secure, allowed := webOrigin(req, false); secure != test.secure || allowed != test.allowed {
 			t.Errorf("%s from %s: secure=%v, allowed=%v", test.origin, test.remote, secure, allowed)
 		}
 	}
@@ -119,5 +119,30 @@ func TestExpiredBrowserSession(t *testing.T) {
 	}
 	if _, ok := s.create(); !ok || len(s.sessions) != 1 {
 		t.Fatal("expired session was not replaced")
+	}
+}
+
+func TestLoopbackOriginThroughProxy(t *testing.T) {
+	for _, test := range []struct {
+		host, origin string
+		allowed      bool
+	}{
+		{"localhost:8080", "http://localhost:8080", true},
+		{"127.0.0.1:8080", "http://127.0.0.1:8080", true},
+		{"[::1]:8080", "http://[::1]:8080", true},
+		{"localhost:8080", "http://localhost:9090", false},
+		{"chains.example", "http://chains.example", false},
+		{"localhost:8080", "", false},
+	} {
+		req := httptest.NewRequest("POST", "http://"+test.host+"/operator/v1/session", nil)
+		req.RemoteAddr = "192.0.2.42:9000"
+		req.Header.Set("Origin", test.origin)
+		req.Header.Set("X-Forwarded-For", "127.0.0.1")
+		if secure, allowed := webOrigin(req, true); secure || allowed != test.allowed {
+			t.Errorf("%q with host %q: secure=%v allowed=%v", test.origin, test.host, secure, allowed)
+		}
+		if _, allowed := webOrigin(req, false); allowed {
+			t.Errorf("accepted forwarded HTTP request without opt-in: %q", test.origin)
+		}
 	}
 }

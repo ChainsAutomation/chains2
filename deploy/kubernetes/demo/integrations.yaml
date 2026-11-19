@@ -1,0 +1,99 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chains-fan
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: chains
+      app.kubernetes.io/component: fan
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: chains
+        app.kubernetes.io/component: fan
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: wait-for-authority
+          image: busybox:1.37
+          command: ["sh", "-ec", "until nc -z chains 8080; do sleep 1; done"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+      containers:
+        - name: fan
+          image: chains:dev
+          imagePullPolicy: IfNotPresent
+          args: ["fan", "-id", "sim-fan"]
+          env:
+            - name: CHAINS_BUS
+              valueFrom:
+                secretKeyRef:
+                  name: chains-runtime
+                  key: CHAINS_BUS
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chains-sensor
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: chains
+      app.kubernetes.io/component: sensor
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: chains
+        app.kubernetes.io/component: sensor
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: wait-for-authority
+          image: busybox:1.37
+          command: ["sh", "-ec", "until nc -z chains 8080; do sleep 1; done"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+      containers:
+        - name: sensor
+          image: chains:dev
+          imagePullPolicy: IfNotPresent
+          args: ["sensor", "-id", "humidity-sensor", "-sensor-broker", "mqtt://mosquitto:1883"]
+          env:
+            - name: CHAINS_BUS
+              valueFrom:
+                secretKeyRef:
+                  name: chains-runtime
+                  key: CHAINS_BUS
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]

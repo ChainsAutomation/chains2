@@ -1,0 +1,8 @@
+{
+  "id": "engine",
+  "authority": "engine",
+  "namespace": "chains",
+  "operator_api": true,
+  "operator_web": true,
+  "operator_trace": true
+}

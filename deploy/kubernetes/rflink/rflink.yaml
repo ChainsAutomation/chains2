@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chains-rflink
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: chains
+      app.kubernetes.io/component: rflink
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: chains
+        app.kubernetes.io/component: rflink
+    spec:
+      automountServiceAccountToken: false
+      nodeSelector:
+        kubernetes.io/os: linux
+        chains-automation.io/rflink: "true"
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        # Set this to the numeric group that can access the allocated serial device.
+        supplementalGroups: [20]
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: rflink
+          image: chains-python:dev
+          imagePullPolicy: IfNotPresent
+          args: ["rflink", "--service-id", "rflink-gateway"]
+          env:
+            - name: CHAINS_BUS
+              valueFrom:
+                secretKeyRef:
+                  name: chains-runtime
+                  key: CHAINS_BUS
+            - name: CHAINS_SETTINGS__PORT
+              value: /dev/rflink
+          resources:
+            # Replace with the resource advertised by your serial device plugin.
+            limits:
+              chains-automation.io/rflink: 1
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]

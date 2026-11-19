@@ -1,0 +1,65 @@
+x-chains-image: &chains-image
+  image: chains:dev
+x-bus: &bus
+  CHAINS_BUS: mqtt://mosquitto:1883
+  CHAINS_NAMESPACE: chains
+
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2.0.23
+    volumes:
+      - ../examples/mosquitto-demo.conf:/mosquitto/config/mosquitto.conf:ro
+    healthcheck:
+      test: ["CMD", "mosquitto_pub", "-h", "127.0.0.1", "-q", "1", "-t", "chains-demo/health", "-n"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+
+  authority:
+    <<: *chains-image
+    build:
+      context: ..
+      dockerfile: deploy/go.Dockerfile
+    command: ["engine", "-config", "/etc/chains/config.json", "-rules", "/etc/chains/humidity.chains", "-database", "/var/lib/chains/state.sqlite", "-listen", "0.0.0.0:8080"]
+    environment:
+      <<: *bus
+      CHAINS_TOKEN: ${CHAINS_TOKEN:?Set CHAINS_TOKEN in deploy/.env or the environment}
+      CHAINS_OPERATOR_WEB_LOOPBACK_PROXY: "true"
+    volumes:
+      - ../examples/humidity.json:/etc/chains/config.json:ro
+      - ../examples/humidity.chains:/etc/chains/humidity.chains:ro
+      - authority-state:/var/lib/chains
+    ports:
+      - "127.0.0.1:${CHAINS_HTTP_PORT:-8080}:8080"
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "CHAINS_OPERATOR_TOKEN=\"$$CHAINS_TOKEN\" chainsctl state --output json >/dev/null"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  fan:
+    <<: *chains-image
+    pull_policy: never
+    command: ["fan", "-id", "sim-fan"]
+    environment: *bus
+    depends_on:
+      authority:
+        condition: service_healthy
+    restart: unless-stopped
+
+  sensor:
+    <<: *chains-image
+    pull_policy: never
+    command: ["sensor", "-id", "humidity-sensor", "-sensor-broker", "mqtt://mosquitto:1883"]
+    environment: *bus
+    depends_on:
+      authority:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  authority-state:

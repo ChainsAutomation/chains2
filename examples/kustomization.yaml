@@ -1,0 +1,10 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+configMapGenerator:
+  - name: chains-humidity
+    files:
+      - config.json=humidity.json
+      - humidity.chains
+  - name: chains-demo-mosquitto
+    files:
+      - mosquitto.conf=mosquitto-demo.conf

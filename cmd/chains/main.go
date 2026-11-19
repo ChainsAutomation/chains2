@@ -168,7 +168,7 @@ func runEngine(ctx context.Context, c config) error {
 	}
 	handler := e.HTTP(c.Token, c.HTTP)
 	if c.OperatorWeb {
-		handler = e.WebHTTP(c.Token, c.HTTP, assets)
+		handler = e.WebHTTP(c.Token, c.HTTP, assets, c.OperatorWebLoopbackProxy)
 	}
 	server := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second}
 	defer server.Close()

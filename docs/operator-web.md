@@ -20,7 +20,7 @@ Enable the console on the state authority. Set `CHAINS_TOKEN` to the operator to
 
 Open `http://127.0.0.1:8080/ui/` and sign in with the token. The equivalent configuration settings are `operator_web` and `CHAINS_OPERATOR_WEB=true`. The console defaults to disabled. The Go binary serves all runtime assets. Builds without the `webui` tag still provide the CLI and operator API.
 
-For remote access, put the authority behind an HTTPS reverse proxy. Preserve the browser's original `Host` and disable buffering for `/operator/v1/activity`. HTTP sign-in is available over loopback. Browser sessions expire after eight hours and are cleared when the authority restarts. Sign out to revoke the current session. CLI clients continue to use the bearer token.
+For remote access, put the authority behind an HTTPS reverse proxy. Preserve the browser's original `Host` and disable buffering for `/operator/v1/activity`. HTTP sign-in is available over loopback. For a service reachable only through a loopback-bound Docker or Kubernetes forward, set `operator_web_loopback_proxy`, `-operator-web-loopback-proxy`, or `CHAINS_OPERATOR_WEB_LOOPBACK_PROXY=true`. This permits a matching loopback browser origin when the forwarding connection has a non-loopback peer address. The setting defaults to off and does not use forwarded headers. Browser sessions expire after eight hours and are cleared when the authority restarts. Sign out to revoke the current session. CLI clients continue to use the bearer token.
 
 ## Views
 
