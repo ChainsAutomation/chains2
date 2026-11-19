@@ -1,0 +1,4 @@
+reading = Event(type="humidity.reported", device_id="bathroom-sensor")
+fan = Device(service_id="sim-fan", device_id="fan")
+if reading.data.value >= 70 and State(fan).power == false:
+    Action("set_power", device=fan, value=true)

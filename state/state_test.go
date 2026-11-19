@@ -1,0 +1,72 @@
+package state
+
+import (
+	"encoding/json"
+	"path/filepath"
+	"testing"
+	"time"
+
+	chains "chains-automation"
+)
+
+func TestReportAndRecovery(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.sqlite")
+	a, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	report := func(id string, observed time.Time, value string) (Update, []Change) {
+		m := chains.Message{ID: id, Source: "sensor", DeviceID: "one", ObservedAt: observed}
+		u, c, err := a.Report(m, map[string]json.RawMessage{"value": json.RawMessage(value)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return u, c
+	}
+	_, first := report("first", now, "42")
+	if len(first) != 1 || !first[0].Initial {
+		t.Fatalf("first observation: %v", first)
+	}
+	later := now.Add(time.Second)
+	u, same := report("same", later, "42")
+	if len(same) != 0 || !u.Attributes["value"].ChangedAt.Equal(now) || !u.Attributes["value"].ObservedAt.Equal(later) {
+		t.Fatalf("repeat: %v %v", u, same)
+	}
+	_, changed := report("changed", later.Add(time.Second), "43")
+	if len(changed) != 1 || string(changed[0].Previous) != "42" || changed[0].Initial {
+		t.Fatalf("transition: %v", changed)
+	}
+	a.Close()
+	a, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	if got := a.Lookup("sensor/one")["value"]; got != float64(43) {
+		t.Fatalf("restored value: %v", got)
+	}
+	replay, events := report("changed", later.Add(2*time.Second), "99")
+	if replay.Revision != 0 || len(events) != 0 {
+		t.Fatalf("duplicate report accepted: %v %v", replay, events)
+	}
+}
+
+func TestResolveDevice(t *testing.T) {
+	view := NewView()
+	s := view.Snapshot()
+	s.Services["one"] = chains.Service{Name: "LEDPanel", Devices: []chains.Device{{ID: "a", Name: "panel0"}}}
+	s.Services["two"] = chains.Service{Name: "different", Devices: []chains.Device{{ID: "a", Name: "panel0"}}}
+	view.Replace(s)
+	if service, device, err := view.ResolveDevice("LEDPanel", "panel0"); service != "one" || device != "a" || err != nil {
+		t.Fatalf("resolved %s/%s: %v", service, device, err)
+	}
+	if _, _, err := view.ResolveDevice("LEDPanel", "missing"); err == nil {
+		t.Fatal("missing resolution succeeded")
+	}
+	s.Services["two"] = chains.Service{Name: "LEDPanel", Devices: []chains.Device{{ID: "a", Name: "panel0"}}}
+	view.Replace(s)
+	if _, _, err := view.ResolveDevice("LEDPanel", "panel0"); err == nil {
+		t.Fatal("ambiguous resolution succeeded")
+	}
+}

@@ -1,0 +1,2 @@
+Event(type="zigbee2mqtt.action", device_id="0x0011223344556677", action=single)
+Action("set_power", service_name=Zigbee2MQTT, device_name="hall/light", value=true)
