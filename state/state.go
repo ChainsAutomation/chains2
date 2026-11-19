@@ -93,6 +93,17 @@ func (v *View) Service(id string) (chains.Service, bool) {
 	return s, ok
 }
 
+// Services returns the registered descriptions, whose contents are immutable.
+func (v *View) Services() []chains.Service {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	result := make([]chains.Service, 0, len(v.data.Services))
+	for _, service := range v.data.Services {
+		result = append(result, service)
+	}
+	return result
+}
+
 func (v *View) Snapshot() Snapshot {
 	v.mu.RLock()
 	defer v.mu.RUnlock()

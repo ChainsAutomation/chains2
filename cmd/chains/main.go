@@ -23,6 +23,7 @@ import (
 	"chains-automation/rules"
 	"chains-automation/sdk"
 	"chains-automation/state"
+	webui "chains-automation/web"
 	"chains-automation/z2m"
 )
 
@@ -80,6 +81,10 @@ func openBus(ctx context.Context, address, namespace string, sub bus.Subscriptio
 }
 
 func runEngine(ctx context.Context, c config) error {
+	assets := webui.Assets()
+	if c.OperatorWeb && (!c.OperatorAPI || assets == nil) {
+		return errors.New("operator web requires -operator-api and a build with -tags webui")
+	}
 	if c.OperatorAPI && (c.ID != c.Authority || c.Listen == "" || c.Token == "") {
 		return errors.New("operator API requires the authority, HTTP listen address, and token")
 	}
@@ -161,7 +166,11 @@ func runEngine(ctx context.Context, c config) error {
 	if err != nil {
 		return err
 	}
-	server := &http.Server{Handler: e.HTTP(c.Token, c.HTTP), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second}
+	handler := e.HTTP(c.Token, c.HTTP)
+	if c.OperatorWeb {
+		handler = e.WebHTTP(c.Token, c.HTTP, assets)
+	}
+	server := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second}
 	defer server.Close()
 	result := make(chan error, 1)
 	go func() { result <- server.Serve(listener); cancel() }()

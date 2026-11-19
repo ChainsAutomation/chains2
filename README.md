@@ -20,7 +20,7 @@ For Redis, add `-bus redis://localhost:6379` to the engine, fan, and sensor comm
 
 ## Operator console
 
-Build `./cmd/chainsctl` to inspect state, watch live events and rule runs, or send manual events. The terminal UI combines all three in a keyboard-driven view. The [operator guide](docs/operator-cli.md) covers authority setup, table, JSON and CSV output, filters, and event profiles.
+Build `./cmd/chainsctl` to inspect state, watch live events and rule runs, or send manual events. The terminal UI combines all three in a keyboard-driven view. The [operator guide](docs/operator-cli.md) covers authority setup, table, JSON and CSV output, filters, and event profiles. The [web console guide](docs/operator-web.md) covers the bundled browser UI and its Trace Explorer.
 
 ## Rules
 

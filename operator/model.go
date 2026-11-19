@@ -36,6 +36,12 @@ type Record struct {
 	Truncated   bool            `json:"truncated,omitempty"`
 }
 
+type TraceHistory struct {
+	Records  []Record   `json:"records"`
+	OldestID string     `json:"oldest_id,omitempty"`
+	OldestAt *time.Time `json:"oldest_at,omitempty"`
+}
+
 type State struct {
 	Epoch    string     `json:"epoch"`
 	Revision uint64     `json:"revision"`

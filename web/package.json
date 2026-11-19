@@ -1,0 +1,21 @@
+{
+  "name": "chains-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit && vite build",
+    "dev": "vite",
+    "test": "playwright test"
+  },
+  "dependencies": {
+    "@solidjs/web": "^2.0.0",
+    "solid-js": "^2.0.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.57.0",
+    "@solidjs/vite-plugin": "^3.0.0",
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.3",
+    "vite": "^8.0.0"
+  }
+}

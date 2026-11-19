@@ -28,6 +28,7 @@ type config struct {
 	Timezone      string                       `json:"timezone"`
 	Week          string                       `json:"week"`
 	Scheduler     bool                         `json:"scheduler"`
+	OperatorWeb   bool                         `json:"operator_web"`
 	OperatorAPI   bool                         `json:"operator_api"`
 	OperatorTrace bool                         `json:"operator_trace"`
 	Debug         bool                         `json:"debug"`
@@ -61,6 +62,7 @@ func readConfig(args []string) (config, error) {
 	}
 	z2mEnabled := f.Bool("z2m-enabled", false, "enable the Zigbee2MQTT bridge")
 	scheduler := f.Bool("scheduler", c.Scheduler, "enable calendar rules")
+	operatorWeb := f.Bool("operator-web", false, "serve the bundled web console")
 	operatorAPI := f.Bool("operator-api", false, "enable the authority operator API")
 	operatorTrace := f.Bool("operator-trace", false, "emit rule lifecycle telemetry")
 	debug := f.Bool("debug", false, "log event and rule diagnostics")
@@ -104,6 +106,8 @@ func readConfig(args []string) (config, error) {
 			c.Z2M.Enabled = *z2mEnabled
 		case "scheduler":
 			c.Scheduler = *scheduler
+		case "operator-web":
+			c.OperatorWeb = *operatorWeb
 		case "operator-api":
 			c.OperatorAPI = *operatorAPI
 		case "operator-trace":
@@ -120,7 +124,7 @@ func readConfig(args []string) (config, error) {
 			*ptr = value
 		}
 	}
-	for name, ptr := range map[string]*bool{"CHAINS_Z2M_ENABLED": &c.Z2M.Enabled, "CHAINS_SCHEDULER": &c.Scheduler, "CHAINS_DEBUG": &c.Debug, "CHAINS_OPERATOR_API": &c.OperatorAPI, "CHAINS_OPERATOR_TRACE": &c.OperatorTrace} {
+	for name, ptr := range map[string]*bool{"CHAINS_Z2M_ENABLED": &c.Z2M.Enabled, "CHAINS_SCHEDULER": &c.Scheduler, "CHAINS_DEBUG": &c.Debug, "CHAINS_OPERATOR_WEB": &c.OperatorWeb, "CHAINS_OPERATOR_API": &c.OperatorAPI, "CHAINS_OPERATOR_TRACE": &c.OperatorTrace} {
 		if value, ok := os.LookupEnv(name); ok {
 			if err := json.Unmarshal([]byte(value), ptr); err != nil {
 				return c, fmt.Errorf("%s: %w", name, err)

@@ -270,6 +270,30 @@ func (e *Engine) operatorRoutes(mux *http.ServeMux, auth func(http.HandlerFunc) 
 		return
 	}
 	mux.HandleFunc("GET "+operator.Base+"/state", auth(e.operatorState))
+	mux.HandleFunc("GET "+operator.Base+"/services", auth(func(w http.ResponseWriter, _ *http.Request) {
+		services := e.view.Services()
+		sort.Slice(services, func(i, j int) bool { return services[i].UUID < services[j].UUID })
+		writeJSON(w, http.StatusOK, services)
+	}))
+	mux.HandleFunc("GET "+operator.Base+"/traces", auth(func(w http.ResponseWriter, r *http.Request) {
+		id := r.URL.Query().Get("correlation")
+		if !chains.Segment(id) {
+			http.Error(w, "invalid correlation ID", http.StatusBadRequest)
+			return
+		}
+		records, _, _, _, _ := e.operator.feed.Read("", operator.HistorySize)
+		result := operator.TraceHistory{Records: []operator.Record{}}
+		if len(records) > 0 {
+			result.OldestID = records[0].ID
+			result.OldestAt = &records[0].At
+		}
+		for _, record := range records {
+			if record.Correlation == id {
+				result.Records = append(result.Records, record)
+			}
+		}
+		writeJSON(w, http.StatusOK, result)
+	}))
 	mux.HandleFunc("GET "+operator.Base+"/profiles", auth(func(w http.ResponseWriter, _ *http.Request) {
 		list := []operator.Profile{}
 		for name, mapping := range mappings {

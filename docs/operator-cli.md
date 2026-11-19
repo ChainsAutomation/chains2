@@ -1,6 +1,6 @@
 # Operator CLI and TUI
 
-`chainsctl` connects to the state authority's HTTP API. It can inspect reported state, follow live activity, and publish manual events over either system bus. Build it with Go 1.23 or newer.
+`chainsctl` connects to the state authority's HTTP API. It can inspect reported state, follow live activity, and publish manual events over either system bus. Build it with Go 1.23 or newer. For browser access and correlated activity timelines, see the [web console guide](operator-web.md).
 
 ```sh
 CGO_ENABLED=0 go build -o chainsctl ./cmd/chainsctl
