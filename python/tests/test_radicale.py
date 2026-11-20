@@ -137,7 +137,12 @@ class DAVIntegrationTest(TestCase):
     @staticmethod
     def records(s):
         import json
-        return [json.loads(row["envelope"]) for row in s.db.execute("SELECT * FROM outbox ORDER BY rowid")]
+        records = []
+        for row in s.db.execute("SELECT * FROM outbox ORDER BY rowid"):
+            packet = json.loads(row["envelope"])
+            batch = packet["data"]
+            records.append({**packet, "type": batch["event_type"], "data": batch["observations"][0]["data"]})
+        return records
 
     def test_dav_checkpoint_restart_and_actions(self):
         s = self.service
@@ -260,7 +265,7 @@ END:VEVENT
                 (root / "config.json").write_text("{}")
                 (root / "mirror.chains").write_text(
                     'Event(type="calendar.entry.created", title="Rule trigger")\n'
-                    'Action("create_todo", service_name="Radicale Fixture", device_name="Default", '
+                    'Action("create_todo", service_name="Radicale Fixture", device_name="System", '
                     'collection="home", title="Created by rule")\n'
                 )
                 engine = Popen([os.environ["CHAINS_TEST_ENGINE_BIN"], "engine", "-config", str(root / "config.json"),
@@ -302,9 +307,9 @@ END:VEVENT
                             href = service.dav.url(service.urls["home"], entry_id + ".ics")
                             service.dav.request("PUT", href, item, **{"Content-Type": "text/calendar"})
                             trigger = next_message("calendar.entry.created",
-                                                   lambda p: p["data"]["uid"] == entry_id)
+                                                   lambda p: p["observations"][0]["data"]["uid"] == entry_id)
                             result = next_message("calendar.todo.created",
-                                                  lambda p: p["data"]["title"] == "Created by rule")
+                                                  lambda p: p["observations"][0]["data"]["title"] == "Created by rule")
                             self.assertEqual(result["correlation_id"], trigger["id"])
                             self.assertTrue(result["action_id"])
                     finally:

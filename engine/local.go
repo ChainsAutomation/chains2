@@ -109,7 +109,7 @@ func (e *Engine) ingestLocal(ctx context.Context, input localInput) error {
 	if err := e.handle(ctx, m); err != nil {
 		return err
 	}
-	if input.mirror {
+	if input.mirror && m.Type != chains.ObservationSubmitted && m.Type != chains.Report {
 		e.mirror(m)
 	}
 	return nil
@@ -224,7 +224,7 @@ func (e *Engine) publishDerived(ctx context.Context, m chains.Message) error {
 	}
 	// The engine loop is the sole owner of ingress deduplication.
 	e.duplicate(m)
-	if m.Type == chains.Changed || m.Type == chains.AvailabilityChanged {
+	if m.Type == chains.AvailabilityChanged {
 		e.runtime.Dispatch(m)
 	}
 	e.mirror(m)

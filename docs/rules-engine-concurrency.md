@@ -7,8 +7,8 @@ Chains uses one ingress loop per engine process and one Go goroutine per active 
 ```mermaid
 flowchart LR
     Bus["MQTT or Redis Streams"] --> Ingress["Ingress loop<br/>Decode, validate, deduplicate"]
-    Ingress --> Dispatch["Dispatch<br/>Event type and catch-all buckets"]
-    Ingress --> State["Local state view"]
+    Ingress --> State["Commit or apply a State revision"]
+    State --> Dispatch["Dispatch<br/>Event type and catch-all buckets"]
     Dispatch --> RunA["Rule run A"]
     Dispatch --> RunB["Rule run B"]
     State -. "State() reads" .-> RunA
@@ -21,7 +21,7 @@ flowchart LR
     Publisher --> Bus
 ```
 
-The dispatcher checks triggers and waiting runs indexed under the incoming event type, plus catch-all patterns. A selector with `type="keyboard.key"` goes in that type's bucket. A selector with just `device_class=light` goes in the catch-all bucket. Remaining fields are checked against the event after the bucket lookup. The dispatcher lock covers matching, waking waits, and admitting new runs. Rule bodies execute outside that lock. [Ingress](../engine/engine.go#L117) · [Dispatcher](../rules/runtime.go#L134)
+The dispatcher checks triggers and waiting runs indexed under the incoming event type, plus catch-all patterns. A selector with `type="keyboard.key"` goes in that type's bucket. A selector with just `device_class=light` goes in the catch-all bucket. Remaining fields are checked against each device patch. A matching batch reaches each trigger or wait once, after its full revision is visible to the process. The dispatcher lock covers matching, waking waits, and admitting new runs. Rule bodies execute outside that lock. [Ingress](../engine/engine.go#L117) · [Dispatcher](../rules/runtime.go#L134)
 
 On the authority with Zigbee2MQTT enabled, local messages enter the same ingress loop directly. The engine dispatches locally and mirrors to the Chains bus through a separate publisher. Local actions call the bridge directly. The bridge still talks to Zigbee2MQTT over its source MQTT connection. The engine suppresses its own mirrored copies so they don't retrigger local rules. [Hosted service](../engine/local.go#L41) · [Echo suppression](../engine/engine.go#L174)
 

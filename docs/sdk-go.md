@@ -35,13 +35,14 @@ func main() {
     err = sdk.RunService(ctx, cfg, sdk.Definition{
         Service: chains.Service{
             ServiceType: "ping",
+            Devices: []chains.Device{{ID: "system", Name: "System", Class: "system", Attributes: []string{"last_ping"}}},
             Events: map[string]map[string]json.RawMessage{
                 "ping": {"1": json.RawMessage(`{"type":"object"}`)},
             },
         },
         Hooks: sdk.Hooks{
             OnStart: func(ctx context.Context, service *sdk.Runtime) error {
-                return service.Event(ctx, "ping", "", "", map[string]any{})
+                return service.Event(ctx, "ping", "system", "", map[string]any{}, map[string]any{"last_ping": true})
             },
         },
     })
@@ -51,7 +52,7 @@ func main() {
 }
 ```
 
-The empty device and version select the default device and schema version `1`. With no devices declared, the SDK adds `default`. A one-shot producer can call `service.Stop()` after publishing.
+The empty device and version select the default device and schema version `1`. With no devices declared, the SDK adds `system`. A one-shot producer can call `service.Stop()` after publishing.
 
 ## Configuration and lifecycle
 
@@ -63,7 +64,7 @@ Initialize a settings struct with defaults before calling `LoadConfig`. Use `tom
 |---|---|
 | `OnInit` | Set up hardware, seed local state, or call `Subscribe(...)` before connecting. |
 | `OnStart` | Start after registration and initial sync. Call `service.Go(worker)` here to attach a managed input loop. |
-| `OnEvent` | Handle selected bus events. `Subscribe("*")` observes public events, and explicit types can include protocol messages. |
+| `OnEvent` | Handle selected bus events. Committed observations carry device patches and payloads in `Message.Observations`. `Subscribe("*")` observes public events, and explicit types can include protocol messages. |
 | `OnPoll` | Perform a single poll. It runs immediately after startup and then waits `poll_interval` seconds after each call. Zero disables polling. |
 | `OnReconnect` | Run after re-registration and silent state sync. |
 | `OnShutdown` | Release hardware after managed workers exit and before transport closure. |
@@ -74,7 +75,9 @@ Workers, callbacks, and actions should honor their contexts. Heartbeats are inde
 
 Declare schemas in `Definition.Service.Actions`, list supported action names on each device, and supply handlers under `Definition.Actions[actionName][schemaVersion]`. An `ActionHandler` receives the context, runtime, request envelope, and parsed action. Its return value goes into the action outcome. Declare idempotence through `Service.IdempotentActions` when retrying the action is safe.
 
-- `SetState(ctx, device, values)` updates declared attributes locally and queues a live report.
+- `Event(ctx, kind, device, version, data, values)` publishes a typed observation and updates local State. Pass `nil` for `data` to use the values map as the payload.
+- `ObserveBatch(ctx, kind, version, observations)` publishes multiple devices of the same service and schema version in one revision. Build patches with `chains.NewObservation(device, values, data)`. The lower-level `Client.ObserveBatch` also takes an optional causal message.
+- `SetState(ctx, device, values)` updates declared attributes locally and queues an observation of type `device.observed`.
 - `SeedState(device, observedAt, values)` queues a silent observation. A zero timestamp uses the current time.
 - `GetState(device, attribute)` reads the local subtree. The built-in `get_state` action exposes it remotely.
 - `SaveState(path)` and `LoadState(path)` opt into disk persistence. Loading preserves timestamps and seeds silently.
@@ -102,7 +105,7 @@ reconnect_interval = 2
 
 Grant the service user read access to the selected evdev node. A stable device path lets the service find the same keyboard after unplugging. Enable `grab` only for an automation keyboard that should be reserved for Chains. Use `--device`, `--grab true`, and `--reconnect-interval` or `CHAINS_SETTINGS__DEVICE`, `CHAINS_SETTINGS__GRAB`, and `CHAINS_SETTINGS__RECONNECT_INTERVAL` to override TOML.
 
-`keyboard.key` contains `action` (`press` or `release`), Linux `code`, symbolic `key`, and the held `keys` and `mods`. Auto-repeat and resynchronization do not trigger events.
+`keyboard.key` contains `action` (`press` or `release`), Linux `code`, symbolic `key`, and the held `keys` and `mods`. The same observation records the transition in `last_key`. Auto-repeat and resynchronization do not trigger events.
 
 ```text
 ev = Event(type="keyboard.key", action=press, key=KEY_F13)

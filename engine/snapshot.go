@@ -93,7 +93,7 @@ func (e *Engine) receiveSnapshot(ctx context.Context, m chains.Message) error {
 		e.requestSnapshot(ctx)
 	} else {
 		e.queuedUpdates = nil
-		e.flushChanges()
+		e.flushEvents()
 	}
 	return nil
 }

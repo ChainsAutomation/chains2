@@ -29,7 +29,7 @@ tasks = "home/tasks/"
 people = "home/addressbook/"
 ```
 
-Use an account with the needed Radicale rights. Both permission lists default to empty and grant their operation independently. Each alias becomes a Chains device with class `dav_collection`. Start another service instance with its own config and instance name to connect a different account. Settings follow the [Python SDK precedence](sdk-python.md#configuration). For example, `--sync-interval 10` overrides the file, and `CHAINS_SETTINGS__SYNC_INTERVAL=15` overrides both. Use HTTPS for connections carrying credentials.
+Use an account with the needed Radicale rights. Both permission lists default to empty and grant their operation independently. Each alias becomes a Chains device with class `dav_collection`. Changes and alarms update its `last_entry`, `last_contact`, `last_todo`, or `last_alarm` attribute. Service actions are on the `system` device. Start another service instance with its own config and instance name to connect a different account. Settings follow the [Python SDK precedence](sdk-python.md#configuration). For example, `--sync-interval 10` overrides the file, and `CHAINS_SETTINGS__SYNC_INTERVAL=15` overrides both. Use HTTPS for connections carrying credentials.
 
 ## Watch for changes and alarms
 
@@ -53,7 +53,7 @@ Action("writestring", service_name="LEDPanel", device_name="panel0", value=alarm
 
 ## Create and delete items
 
-Target the service's `Default` device and pass a collection alias. Create actions return the collection and UID. A subsequent sync publishes the change with the action's correlation ID.
+Target the service's `System` device and pass a collection alias. Create actions return the collection and UID. A subsequent sync publishes the change with the action's correlation ID.
 
 | Action | Arguments after `collection` |
 | --- | --- |
@@ -66,7 +66,7 @@ For dated actions, use an RFC3339 timestamp with an offset or a date such as `20
 
 ```python
 entry = Event(type="calendar.entry.created", collection="family")
-Action("create_todo", service_name="Home DAV", device_name="Default", collection="tasks", title=entry.data.title)
+Action("create_todo", service_name="Home DAV", device_name="System", collection="tasks", title=entry.data.title)
 ```
 
 Names, titles, and any private values supplied as action arguments are visible to bus subscribers and operator watch. The change event field limits apply only to change and alarm publications.

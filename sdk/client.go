@@ -44,25 +44,40 @@ func (c Client) Register(ctx context.Context, s chains.Service) error {
 	return c.Send(ctx, m)
 }
 
-func (c Client) Event(ctx context.Context, kind, device, version string, data any) error {
-	m, err := chains.New(kind, c.Source, data)
+func (c Client) Event(ctx context.Context, kind, device, version string, data any, values map[string]any) error {
+	o, err := chains.NewObservation(device, values, data)
 	if err != nil {
 		return err
 	}
-	m.DeviceID, m.ServiceType, m.SchemaVersion = device, c.ServiceType, version
-	return c.Send(ctx, m)
+	return c.ObserveBatch(ctx, kind, version, []chains.Observation{o}, nil)
 }
 
-func (c Client) Report(ctx context.Context, device string, values map[string]any, cause *chains.Message) error {
-	m, err := chains.New(chains.Report, c.Source, values)
+func (c Client) ObserveBatch(ctx context.Context, kind, version string, observations []chains.Observation, cause *chains.Message) error {
+	m, err := chains.SubmitObservation(c.Source, kind, version, observations)
 	if err != nil {
 		return err
 	}
-	m.DeviceID, m.ServiceType = device, c.ServiceType
 	if cause != nil {
 		m.CausedBy(*cause)
 		m.ActionID = cause.ActionID
 	}
+	return c.Send(ctx, m)
+}
+
+func (c Client) Report(ctx context.Context, device string, values map[string]any, cause *chains.Message) error {
+	o, err := chains.NewObservation(device, values, nil)
+	if err != nil {
+		return err
+	}
+	return c.ObserveBatch(ctx, chains.DeviceObserved, "1", []chains.Observation{o}, cause)
+}
+
+func (c Client) SeedState(ctx context.Context, device string, values map[string]any) error {
+	m, err := chains.New(chains.Report, c.Source, values)
+	if err != nil {
+		return err
+	}
+	m.DeviceID, m.Silent = device, true
 	return c.Send(ctx, m)
 }
 

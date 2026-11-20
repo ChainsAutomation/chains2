@@ -59,8 +59,8 @@ class LauncherTest(TestCase):
         for broker in brokers:
             sent = list(broker.sent.queue)
             self.assertEqual([packet["type"] for packet in sent],
-                             ["service.registered", "service.heartbeat", "ping"])
-            self.assertEqual(sent[-1]["data"], {"tag": "default"})
+                             ["service.registered", "service.heartbeat", "observation.submitted"])
+            self.assertEqual(sent[-1]["data"]["observations"][0]["values"], {"last_ping": {"tag": "default"}})
             self.assertTrue(broker.closed)
 
     def test_callback_only_service_runs_through_launcher(self):
@@ -87,7 +87,7 @@ class LauncherTest(TestCase):
         module.Push = Push
         with patch.dict("sys.modules", {"fixture_push": module}), patch.dict(os.environ, {}, clear=True):
             main(["fixture_push:Push", "--service-id", "push"])
-        self.assertEqual(broker.until("reading")["data"], {"value": 21})
+        self.assertEqual(broker.until_observation("reading")["data"], {"value": 21})
         self.assertTrue(broker.closed)
 
 
@@ -155,7 +155,7 @@ class PollTest(TestCase):
             self.assertTrue(entered.wait(2))
             broker.until("service.heartbeat")
             broker.inject(message("action.requested", "engine", {"name": "read", "args": {}},
-                                  target="poller", device_id="default", schema_version="1", action_id="test"))
+                                  target="poller", device_id="system", schema_version="1", action_id="test"))
             outcome = broker.until("action.outcome", lambda m: m["data"]["status"] == "completed")
             self.assertEqual(outcome["data"]["value"], 7)
             broker.until("service.heartbeat")

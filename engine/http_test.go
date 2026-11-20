@@ -21,7 +21,7 @@ func TestHTTPMappedInput(t *testing.T) {
 	}
 	eventually(t, "sensor registration", func() bool { _, ok := engine.view.Service(sourceID); return ok })
 	httpHandler := engine.HTTP("test-token", map[string]HTTPSource{
-		"humidity": {Source: sourceID, Device: "bathroom", Type: readingKind, SchemaVersion: "1", Attribute: "value"},
+		"humidity": {Source: sourceID, Device: "bathroom", Type: readingKind, SchemaVersion: "1", Attribute: "value", StateAttribute: "humidity"},
 	})
 	do := func(token, value string, want int) {
 		t.Helper()
@@ -37,7 +37,7 @@ func TestHTTPMappedInput(t *testing.T) {
 	do("test-token", "ON", http.StatusBadRequest)
 	do("test-token", "72.5", http.StatusAccepted)
 	found := readMessage(t, observer, func(m chains.Message) bool { return m.Type == readingKind })
-	if found.Source != sourceID || string(found.Data) != `{"value":72.5}` {
+	if found.ServiceID != sourceID || len(found.Observations) != 1 || string(found.Observations[0].Data) != `{"value":72.5}` {
 		t.Fatalf("invalid mapped event: %+v", found)
 	}
 }

@@ -106,7 +106,7 @@ func sensorService() chains.Service {
 			readingKind: {"1": json.RawMessage(`{"type":"object","required":["value"],"properties":{"value":{"type":"number"}}}`)},
 			buttonKind:  {"1": json.RawMessage(`{"type":"object"}`)},
 		},
-		Devices: []chains.Device{{ID: "bathroom", Class: "sensor", Attributes: []string{"humidity"}}},
+		Devices: []chains.Device{{ID: "bathroom", Class: "sensor", Attributes: []string{"humidity", "last_button"}}},
 	}
 }
 
@@ -265,10 +265,9 @@ Action("set_power", service_name=Fan, device_name=fan, value=false)
 		current := worker.view.Snapshot().Devices["sensor/bathroom"]["humidity"]
 		return current.ObservedAt.After(first.ObservedAt) && current.ChangedAt.Equal(first.ChangedAt)
 	})
-	if err := sensor.Event(f.ctx, buttonKind, "bathroom", "1", map[string]any{}); err != nil {
+	if err := sensor.Event(f.ctx, buttonKind, "bathroom", "1", map[string]any{}, map[string]any{"last_button": "pressed"}); err != nil {
 		t.Fatal(err)
 	}
-	_, beforePress := authority.view.Position()
 	pressRequest := readMessage(t, fan.Bus, func(m chains.Message) bool { return m.Type == chains.Request })
 	var pressAction chains.Action
 	if err := json.Unmarshal(pressRequest.Data, &pressAction); err != nil || pressAction.Args["value"] != false {
@@ -277,10 +276,10 @@ Action("set_power", service_name=Fan, device_name=fan, value=false)
 	if err := fan.Outcome(f.ctx, pressRequest, chains.Completed, nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, afterPress := authority.view.Position(); beforePress != afterPress {
-		t.Fatal("button press mutated reported state")
+	if got := authority.State("sensor/bathroom")["last_button"]; got != "pressed" {
+		t.Fatalf("button observation state: %v", got)
 	}
-	if err := sensor.Event(f.ctx, readingKind, "bathroom", "1", map[string]any{"value": 75}); err != nil {
+	if err := sensor.Event(f.ctx, readingKind, "bathroom", "1", map[string]any{"value": 75}, map[string]any{"humidity": 75}); err != nil {
 		t.Fatal(err)
 	}
 	request := readMessage(t, fan.Bus, func(m chains.Message) bool { return m.Type == chains.Request })
@@ -306,7 +305,7 @@ Action("set_power", service_name=Fan, device_name=fan, value=false)
 	eventually(t, "worker power update", func() bool { return worker.State("sim-fan/fan")["power"] == true })
 	before, _ := worker.view.Position()
 	stopAuthority()
-	if err := sensor.Event(f.ctx, readingKind, "bathroom", "1", map[string]any{"value": 90}); err != nil {
+	if err := sensor.Event(f.ctx, readingKind, "bathroom", "1", map[string]any{"value": 90}, map[string]any{"humidity": 90}); err != nil {
 		t.Fatal(err)
 	}
 	newAuthority, _ := f.start(t, authorityID, db, "")
@@ -314,7 +313,7 @@ Action("set_power", service_name=Fan, device_name=fan, value=false)
 		epoch, _ := worker.view.Position()
 		return epoch != before && worker.ready.Load() && worker.State("sim-fan/fan")["power"] == true
 	})
-	if got := newAuthority.State("sensor/bathroom")["humidity"]; got != float64(65) {
+	if got := newAuthority.State("sensor/bathroom")["humidity"]; got != float64(75) {
 		t.Fatalf("restored humidity %v", got)
 	}
 }
@@ -403,9 +402,9 @@ Action("set_power", device=Device(service_id="sim-fan", device_id=fan), value=tr
 	for start := 0; start < b.N; start += 32 {
 		sent := map[string]time.Time{}
 		for index := start; index < min(start+32, b.N); index++ {
-			m, _ := chains.New(readingKind, sourceID, map[string]any{"value": 75})
-			m.DeviceID, m.SchemaVersion = "bathroom", "1"
-			sent[m.ID] = time.Now()
+			o, _ := chains.NewObservation("bathroom", map[string]any{"humidity": 75}, map[string]any{"value": 75})
+			m, _ := chains.SubmitObservation(sourceID, readingKind, "1", []chains.Observation{o})
+			sent[observationID(m)] = time.Now()
 			if err := sensor.Send(f.ctx, m); err != nil {
 				b.Fatal(err)
 			}

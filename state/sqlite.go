@@ -107,9 +107,11 @@ func (d *database) commit(id string, u Update) (bool, error) {
 			return false, err
 		}
 	}
-	for k, v := range u.Attributes {
-		if err := d.put("attribute", u.Address, k, v); err != nil {
-			return false, err
+	for address, attributes := range u.Devices {
+		for key, attribute := range attributes {
+			if err := d.put("attribute", address, key, attribute); err != nil {
+				return false, err
+			}
 		}
 	}
 	if err := d.put("revision", "", "", u.Revision); err != nil {

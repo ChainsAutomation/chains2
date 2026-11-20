@@ -296,7 +296,7 @@ func printWatch(ctx context.Context, out io.Writer, format string, client *opera
 		case "json":
 			return encoder.Encode(r)
 		case "csv":
-			return csvWriter.WriteAll([][]string{{timestamp(r.At), r.Type, r.Source, r.Service, r.Device, r.Target, r.Engine, r.Rule, r.Run, r.Event, r.Action, r.Cause, r.Correlation, r.Summary, string(r.Data), strconv.FormatBool(r.Truncated), r.ID}})
+			return csvWriter.WriteAll([][]string{{timestamp(r.At), r.Type, r.Source, r.Service, recordDevice(r), r.Target, r.Engine, r.Rule, r.Run, r.Event, r.Action, r.Cause, r.Correlation, r.Summary, string(r.Data), strconv.FormatBool(r.Truncated), r.ID}})
 		default:
 			subject, detail := activityText(r)
 			_, err := fmt.Fprintf(out, "%-12s  %-27s  %-23s  %s\n", r.At.Local().Format("15:04:05.000"), tableText(r.Type, 27), tableText(subject, 23), tableText(detail, 96))
@@ -309,8 +309,8 @@ func activityText(r operator.Record) (string, string) {
 	subject := r.Service
 	if r.Rule != "" {
 		subject = r.Engine + "/" + r.Rule
-	} else if r.Device != "" {
-		subject += "/" + r.Device
+	} else if device := recordDevice(r); device != "" {
+		subject += "/" + device
 	} else if subject == "" {
 		subject = r.Engine
 	}
@@ -319,4 +319,11 @@ func activityText(r operator.Record) (string, string) {
 		detail = string(r.Data)
 	}
 	return subject, detail
+}
+
+func recordDevice(r operator.Record) string {
+	if len(r.Devices) > 0 {
+		return strings.Join(r.Devices, ", ")
+	}
+	return r.Device
 }

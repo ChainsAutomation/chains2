@@ -227,7 +227,7 @@ func validateExpr(x *Expression, names map[string]bool, shorthand, pure bool) er
 }
 
 func bareArgument(function, key string) bool {
-	return function == "Event" || ((function == "Action" || function == "Device") && (key == "service_name" || key == "device_name" || key == "service_id" || key == "device_id"))
+	return function == "Event" || ((function == "Action" || function == "Device" || function == "Devices") && (key == "service_name" || key == "device_name" || key == "service_id" || key == "device_id"))
 }
 
 func validateCall(x *Expression, names map[string]bool, pure, opening bool) error {
@@ -269,6 +269,18 @@ func validateCall(x *Expression, names map[string]bool, pure, opening bool) erro
 		} else if !keys["service_name"] || !keys["device_name"] {
 			return bad("device= or both service_name= and device_name=")
 		}
+	case "Devices":
+		if positional != 0 || len(keys) == 0 {
+			return bad("named device selectors")
+		}
+		for key := range keys {
+			switch key {
+			case "service_id", "service_name", "device_id", "device_name":
+			default:
+				return bad("service_id, service_name, device_id or device_name")
+			}
+		}
+
 	case "Device":
 		if positional != 0 || len(keys) != 2 || !(keys["service_id"] && keys["device_id"] || keys["service_name"] && keys["device_name"]) {
 			return bad("a service/device ID pair or a service/device name pair")

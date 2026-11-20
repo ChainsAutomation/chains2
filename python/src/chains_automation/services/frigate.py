@@ -2,12 +2,14 @@
 
 from dataclasses import dataclass, field
 import json
+from hashlib import sha256
 import logging
 from typing import Any
 from urllib.parse import urlsplit
 
 from ._reader import ReaderService
 from ..description import capability
+from ..client import IDENTIFIER
 from ..transports import MQTT
 
 
@@ -50,6 +52,7 @@ def parse_update(raw):
 
 class Frigate(ReaderService):
     settings_type = FrigateSettings
+    retain_devices = True
 
     def onInit(self):
         self._source_uri = self.settings.mqtt_uri if self.settings.mqtt_uri is not None else self.config.uri
@@ -68,14 +71,26 @@ class Frigate(ReaderService):
         if not self.settings.topics or any(topic not in TOPICS for topic in self.settings.topics):
             raise ValueError("Frigate topics must contain events, reviews, or both")
         self.validate_reconnect_interval(self.settings.reconnect_interval)
-        handlers = {"events": self.event_object, "reviews": self.event_review}
-        self._handlers_by_topic = {f"{prefix}/{topic}": handlers[topic] for topic in self.settings.topics}
+        feeds = {"events": self.event_object,
+                 "reviews": self.event_review}
+        self._feeds_by_topic = {f"{prefix}/{topic}": feeds[topic] for topic in self.settings.topics}
 
-    def describe_devices(self):
-        return [{"id": "default", "name": "Frigate", "class": "camera_bridge", "attributes": []}]
+    event_attributes = {"event_object": None, "event_review": None}
+
+    @staticmethod
+    def camera_id(name):
+        if name != "system" and not name.startswith("camera:") and IDENTIFIER.fullmatch(name):
+            return name
+        return "camera:" + sha256(name.encode()).hexdigest()
+
+    def _emit_camera(self, attribute, update, camera):
+        device = self.camera_id(camera)
+        self.register_device({"id": device, "name": camera, "class": "camera",
+                              "attributes": ["last_object", "last_review"]})
+        self._send_event(_device=device, _values={attribute: update})
 
     def read_source(self):
-        mqtt = MQTT(self._source_uri, raw_topics=tuple(self._handlers_by_topic))
+        mqtt = MQTT(self._source_uri, raw_topics=tuple(self._feeds_by_topic))
         try:
             while not self.stopping:
                 delivery = mqtt.receive(0.2)
@@ -84,13 +99,13 @@ class Frigate(ReaderService):
                 if delivery.reset:
                     log.warning("Frigate MQTT stream continuity lost")
                     continue
-                handler = self._handlers_by_topic.get(delivery.topic)
-                if handler is None:
+                feed = self._feeds_by_topic.get(delivery.topic)
+                if feed is None:
                     continue
                 try:
                     update = parse_update(delivery.data)
                     if update is not None and not self.stopping:
-                        self.publish_input(handler, update)
+                        self.publish_input(feed, update)
                 except (ValueError, RecursionError):
                     log.debug("Ignoring invalid Frigate update")
         finally:
@@ -99,9 +114,13 @@ class Frigate(ReaderService):
     @capability(name="frigate.object")
     def event_object(self, phase: str, camera: str, native_id: str, label: str | None,
                      severity: str | None, zones: list[str], payload: dict[str, Any]):
-        self._send_event()
+        summary = {"phase": phase, "native_id": native_id, "label": label,
+                   "severity": severity, "zones": zones}
+        self._emit_camera("last_object", summary, camera)
 
     @capability(name="frigate.review")
     def event_review(self, phase: str, camera: str, native_id: str, label: str | None,
                      severity: str | None, zones: list[str], payload: dict[str, Any]):
-        self._send_event()
+        summary = {"phase": phase, "native_id": native_id, "label": label,
+                   "severity": severity, "zones": zones}
+        self._emit_camera("last_review", summary, camera)

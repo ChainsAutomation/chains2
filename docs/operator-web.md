@@ -26,7 +26,7 @@ For remote access, put the authority behind an HTTPS reverse proxy. Preserve the
 
 | View | Use |
 | --- | --- |
-| **State** | Browse registered services and devices, filter attributes, and inspect values, timestamps, and revisions. Declared attributes without an observation are marked **Unreported**. |
+| **State** | Browse registered services and devices, filter attributes, and inspect values, timestamps, and revisions. Devices in one observation share a revision. Declared attributes without an observation are marked **Unreported**. |
 | **Watch** | Follow events, rule traces, and actions. Pause to inspect a stable list or resume to catch up. Type wildcards such as `action.*` work in the type filter. Enable low-level traffic to see heartbeats and synchronization. |
 | **Send** | Choose a configured HTTP profile or write a `manual.<name>` event. Use fields when available, switch to JSON for complex data, or insert an observed state value. Preview then publish. Drafts survive tab and profile changes until reload or sign-out. |
 | **Trace Explorer** | Open a publication receipt, inspect a Watch record, or paste a correlation ID. The timeline joins matching events, rule runs, actions, outcomes, and state changes. Parent links resolve to records Chains still has. |

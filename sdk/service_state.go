@@ -125,13 +125,18 @@ func containsString(values []string, wanted string) bool {
 }
 
 func (r *Runtime) defaultDevice() string {
-	if _, ok := serviceDevice(r.registration, "default"); ok {
-		return "default"
+	if _, ok := serviceDevice(r.registration, "system"); ok {
+		return "system"
 	}
 	return r.registration.Devices[0].ID
 }
 
 func (r *Runtime) stateReport(device string, at time.Time, silent bool, values map[string]json.RawMessage) chains.Message {
+	if !silent {
+		m, _ := chains.SubmitObservation(r.Config.ServiceID, chains.DeviceObserved, "1", []chains.Observation{{DeviceID: device, Values: values}})
+		m.ObservedAt = at
+		return m
+	}
 	m, _ := chains.New(chains.Report, r.Config.ServiceID, values)
 	m.DeviceID, m.ServiceType, m.ObservedAt, m.Silent = device, r.registration.ServiceType, at, silent
 	return m
@@ -339,5 +344,20 @@ func (r *Runtime) publishQueries() {
 	}
 	if len(r.outgoing) > 0 {
 		r.notify()
+	}
+}
+
+func (r *Runtime) cacheObservation(o chains.Observation, at time.Time) {
+	attributes := r.state[o.DeviceID]
+	if attributes == nil {
+		attributes = map[string]Attribute{}
+		r.state[o.DeviceID] = attributes
+	}
+	for key, value := range o.Values {
+		changed := at
+		if previous, ok := attributes[key]; ok && bytes.Equal(previous.Value, value) {
+			changed = previous.ChangedAt
+		}
+		attributes[key] = Attribute{bytes.Clone(value), changed, at}
 	}
 }

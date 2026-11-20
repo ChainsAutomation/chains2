@@ -10,7 +10,6 @@ import (
 	"regexp"
 	"sort"
 	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -182,6 +181,9 @@ func (e *Engine) observeBus(ctx context.Context) {
 				ids[index] = key
 				seen[key] = true
 				index = (index + 1) % len(ids)
+				if msg.Type == chains.ObservationSubmitted {
+					continue
+				}
 				if msg.Type == operator.TraceType {
 					var r operator.Record
 					if json.Unmarshal(msg.Data, &r) == nil && r.Type != "" {
@@ -207,6 +209,15 @@ func messageActivity(msg chains.Message) operator.Record {
 	if record.Service == "" {
 		record.Service = msg.Source
 	}
+	if len(msg.Observations) == 1 {
+		record.Data = msg.Observations[0].Data
+	}
+	if len(msg.Observations) > 1 {
+		record.Data, _ = json.Marshal(msg.Observations)
+		for _, observation := range msg.Observations {
+			record.Devices = append(record.Devices, observation.DeviceID)
+		}
+	}
 	switch msg.Type {
 	case chains.SnapshotResponse:
 		record.Data = nil
@@ -228,18 +239,9 @@ func messageActivity(msg chains.Message) operator.Record {
 			record.Summary = "Silent state synchronization"
 		}
 	case state.Updated:
-		var update struct {
-			Address string `json:"address"`
-			Service *struct {
-				UUID string `json:"uuid"`
-			} `json:"service"`
-		}
-		if json.Unmarshal(msg.Data, &update) == nil {
-			if service, device, ok := strings.Cut(update.Address, "/"); ok {
-				record.Service, record.Device = service, device
-			} else if update.Service != nil {
-				record.Service = update.Service.UUID
-			}
+		var update state.Update
+		if json.Unmarshal(msg.Data, &update) == nil && update.Service != nil {
+			record.Service = update.Service.UUID
 		}
 	}
 	if record.Correlation == "" {
@@ -300,8 +302,8 @@ func (e *Engine) operatorRoutes(mux *http.ServeMux, auth func(http.HandlerFunc) 
 			profile := operator.Profile{Name: name, Source: mapping.Source, Type: mapping.Type, Device: mapping.Device, Version: mapping.SchemaVersion}
 			if s, ok := e.view.Service(mapping.Source); ok {
 				raw := s.Events[mapping.Type][mapping.SchemaVersion]
-				_, known := device(s, mapping.Device)
-				profile.Ready = len(raw) > 0 && (mapping.Device == "" || known) && e.ready.Load()
+				d, known := device(s, mapping.Device)
+				profile.Ready = len(raw) > 0 && known && contains(d.Attributes, mapping.stateAttribute()) && e.ready.Load()
 				profile.Schema = raw
 				if mapping.Attribute != "" {
 					var object struct{ Properties map[string]json.RawMessage }
@@ -400,10 +402,9 @@ func (e *Engine) operatorSend(w http.ResponseWriter, r *http.Request, mappings m
 			http.Error(w, "invalid manual event name", http.StatusBadRequest)
 			return
 		}
-		m, err = chains.New("manual."+request.Name, e.authorityID, request.Data)
-		if err == nil {
-			m, err = e.validateEvent(m)
-		}
+		m, err = e.makeObservation(chains.OperatorService, "manual."+request.Name, "1", "system", "last_manual_event",
+			map[string]any{"name": request.Name, "data": request.Data}, request.Data)
+
 	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -415,7 +416,7 @@ func (e *Engine) operatorSend(w http.ResponseWriter, r *http.Request, mappings m
 		http.Error(w, "bus unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	writeJSON(w, http.StatusAccepted, operator.Receipt{ID: m.ID, Type: m.Type, Source: m.Source})
+	writeJSON(w, http.StatusAccepted, operator.Receipt{ID: observationID(m), Type: eventType(m), Source: m.Source})
 }
 
 func (e *Engine) operatorWatch(w http.ResponseWriter, r *http.Request) {
@@ -494,13 +495,8 @@ func (e *Engine) operatorWatch(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (e *Engine) normalizeManual(m chains.Message) (chains.Message, error) {
-	name := strings.TrimPrefix(m.Type, "manual.")
-	var body map[string]json.RawMessage
-	if !manualName.MatchString(name) || m.Source != e.authorityID || m.DeviceID != "" || m.Target != "" ||
-		json.Unmarshal(m.Data, &body) != nil || body == nil {
-		return m, errors.New("manual events require authority origin and a JSON object")
-	}
-	m.ServiceID, m.ServiceType, m.DeviceClass, m.SchemaVersion = e.authorityID, "operator", "", "1"
-	return m, nil
+func eventType(m chains.Message) string {
+	var batch chains.ObservationBatch
+	_ = json.Unmarshal(m.Data, &batch)
+	return batch.EventType
 }

@@ -66,7 +66,7 @@ type Runtime struct {
 }
 
 var protocolTypes = map[string]bool{
-	chains.Registration: true, chains.Report: true, chains.Heartbeat: true, chains.Request: true,
+	chains.Registration: true, chains.Report: true, chains.ObservationSubmitted: true, chains.Heartbeat: true, chains.Request: true,
 	chains.StateQuery: true, chains.StateReply: true, chains.SnapshotRequest: true, chains.SnapshotResponse: true,
 	"state.committed": true, "state.head": true,
 }
@@ -195,7 +195,7 @@ func (r *Runtime) prepare() error {
 		r.registration.Name = r.Config.Instance
 	}
 	if len(r.registration.Devices) == 0 {
-		r.registration.Devices = []chains.Device{{ID: "default", Name: "Default", Class: "device"}}
+		r.registration.Devices = []chains.Device{{ID: "system", Name: "System", Class: "system"}}
 	}
 	if r.registration.Actions == nil {
 		r.registration.Actions = map[string]map[string]json.RawMessage{}
@@ -339,39 +339,81 @@ func (r *Runtime) heartbeat(ctx context.Context) error {
 }
 
 // Event publishes a declared event. An empty device selects the default device.
-func (r *Runtime) Event(ctx context.Context, kind, device, version string, data any) error {
-	if !r.online.Load() {
-		return errors.New("service bus is synchronizing")
-	}
+func (r *Runtime) Event(ctx context.Context, kind, device, version string, data any, values map[string]any) error {
 	if device == "" {
 		device = r.defaultDevice()
 	}
-	if _, ok := serviceDevice(r.registration, device); !ok {
-		return errors.New("unknown event device")
+	o, err := chains.NewObservation(device, values, data)
+	if err != nil {
+		return err
+	}
+	return r.ObserveBatch(ctx, kind, version, []chains.Observation{o})
+}
+
+func (r *Runtime) ObserveBatch(ctx context.Context, kind, version string, observations []chains.Observation) error {
+	if !r.online.Load() {
+		return errors.New("service bus is synchronizing")
 	}
 	if version == "" {
 		version = "1"
 	}
 	schema := r.schemas[kind][version]
-	if schema == nil {
+	if schema == nil && kind != chains.DeviceObserved {
 		return errors.New("event schema is not declared")
 	}
-	m, err := chains.New(kind, r.Config.ServiceID, data)
+	seen := map[string]bool{}
+	if len(observations) == 0 {
+		return errors.New("empty observation batch")
+	}
+	for _, o := range observations {
+		d, ok := serviceDevice(r.registration, o.DeviceID)
+		if !ok || seen[o.DeviceID] || len(o.Values) == 0 {
+			return errors.New("invalid observation device")
+		}
+		seen[o.DeviceID] = true
+		for name := range o.Values {
+			if !containsString(d.Attributes, name) {
+				return fmt.Errorf("undeclared state attribute %s/%s", o.DeviceID, name)
+			}
+		}
+		if schema != nil {
+			data := o.Data
+			if len(data) == 0 {
+				data, _ = json.Marshal(o.Values)
+			}
+			var value any
+			if err := json.Unmarshal(data, &value); err != nil {
+				return err
+			}
+			if err := schema.Validate(value); err != nil {
+				return err
+			}
+		}
+	}
+	m, err := chains.SubmitObservation(r.Config.ServiceID, kind, version, observations)
 	if err != nil {
 		return err
 	}
-	var value any
-	if err = json.Unmarshal(m.Data, &value); err != nil {
-		return err
-	}
-	if err = schema.Validate(value); err != nil {
-		return err
-	}
-	m.DeviceID, m.ServiceType, m.SchemaVersion = device, r.registration.ServiceType, version
 	if cause, ok := ctx.Value(actionContextKey{}).(chains.Message); ok {
 		m.CausedBy(cause)
+		m.ActionID = cause.ActionID
 	}
-	return r.send(ctx, m)
+	if err = r.send(ctx, m); err != nil {
+		return err
+	}
+	r.stateMu.Lock()
+	defer r.stateMu.Unlock()
+	for _, o := range observations {
+		for key := range o.Values {
+			if m.ObservedAt.Before(r.state[o.DeviceID][key].ObservedAt) {
+				return nil
+			}
+		}
+	}
+	for _, o := range observations {
+		r.cacheObservation(o, m.ObservedAt)
+	}
+	return nil
 }
 
 func (r *Runtime) notify() {

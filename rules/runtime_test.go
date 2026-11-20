@@ -17,6 +17,8 @@ func (h runtimeHost) ResolveDevice(service, device string) (DeviceRef, error) {
 	return DeviceRef{service, device}, nil
 }
 
+func (h runtimeHost) ResolveDevices(map[string]string) []DeviceRef { return nil }
+
 func (h runtimeHost) State(string) map[string]any { return nil }
 func (h runtimeHost) Act(ctx context.Context, _ chains.Message, _ DeviceRef, name string, _ string, _ map[string]any) (map[string]any, error) {
 	select {
@@ -147,6 +149,13 @@ func (h captureHost) ResolveDevice(service, device string) (DeviceRef, error) {
 		return DeviceRef{"led", "panel0"}, nil
 	}
 	return DeviceRef{}, errors.New("test target unavailable")
+}
+
+func (h captureHost) ResolveDevices(selectors map[string]string) []DeviceRef {
+	if selectors["service_name"] == "Amplifier" {
+		return []DeviceRef{{"amp", "zone1"}, {"amp", "zone2"}}
+	}
+	return nil
 }
 
 func (h captureHost) State(address string) map[string]any {
@@ -291,5 +300,59 @@ Action('write', device=ev.device, value=State(ev.device).power)
 	call := receiveInvocation(t, h)
 	if call.ref != (DeviceRef{"second", "shared"}) || call.args["value"] != true {
 		t.Fatalf("expected reported device's current state, got %+v", call)
+	}
+}
+
+func TestBatchDispatchAndNameSelectors(t *testing.T) {
+	r, h := captureRuntime(t, `
+ev = Event(service_name=Amplifier, device_name=Main, attribute=volume, value=35)
+for match in ev.matches:
+    Action("matched", device=match.device, value=match.values.volume)
+for zone in Devices(service_name=Amplifier):
+    Action("discovered", device=zone)
+`)
+	event, _ := chains.New("amp.sample", "engine", nil)
+	event.ServiceID, event.ServiceName = "amp", "Amplifier"
+	first, _ := chains.NewObservation("zone1", map[string]any{"volume": 35}, map[string]any{"volume": 65})
+	first.DeviceName = "Aux"
+	second, _ := chains.NewObservation("zone2", map[string]any{"volume": 36, "balance": 35}, nil)
+	second.DeviceName = "Main"
+	event.Observations = []chains.Observation{first, second}
+	r.Dispatch(event)
+	first.DeviceName = "Main"
+	event.Observations[0] = first
+	r.Dispatch(event)
+	for i, want := range []invocation{
+		{name: "matched", ref: DeviceRef{"amp", "zone1"}, args: map[string]any{"value": float64(35)}},
+		{name: "discovered", ref: DeviceRef{"amp", "zone1"}},
+		{name: "discovered", ref: DeviceRef{"amp", "zone2"}},
+	} {
+		got := receiveInvocation(t, h)
+		if got.name != want.name || got.ref != want.ref || got.args["value"] != want.args["value"] {
+			t.Fatalf("invocation %d = %+v, want %+v", i, got, want)
+		}
+	}
+	r.Close()
+	if len(h.calls) != 0 {
+		t.Fatal("batch matched more than once")
+	}
+}
+
+func TestGenericEventSkipsLeafChanges(t *testing.T) {
+	r, h := captureRuntime(t, `
+ev = Event(device_class=sensor)
+Action("matched",device=ev.device,value=ev.type)
+`)
+	changed, _ := chains.New(chains.Changed, "engine", map[string]any{"attribute": "value", "value": 42})
+	changed.ServiceID, changed.DeviceID, changed.DeviceClass = "sensor", "one", "sensor"
+	r.Dispatch(changed)
+	observation, _ := chains.NewObservation("one", map[string]any{"value": 42}, nil)
+	observation.DeviceClass = "sensor"
+	event, _ := chains.New("sensor.sample", "engine", nil)
+	event.ServiceID = "sensor"
+	event.Observations = []chains.Observation{observation}
+	r.Dispatch(event)
+	if got := receiveInvocation(t, h); got.args["value"] != "sensor.sample" {
+		t.Fatalf("unexpected trigger %+v", got)
 	}
 }

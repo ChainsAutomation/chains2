@@ -3,20 +3,21 @@ package engine
 import (
 	"crypto/subtle"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
-	"time"
 
 	chains "chains-automation"
 	"chains-automation/bus"
 )
 
 type HTTPSource struct {
-	Source        string `json:"source"`
-	Device        string `json:"device"`
-	Type          string `json:"type"`
-	SchemaVersion string `json:"schema_version"`
-	Attribute     string `json:"attribute"`
+	Source         string `json:"source"`
+	Device         string `json:"device"`
+	Type           string `json:"type"`
+	SchemaVersion  string `json:"schema_version"`
+	Attribute      string `json:"attribute"`
+	StateAttribute string `json:"state_attribute,omitempty"`
 }
 
 func (e *Engine) HTTP(token string, mappings map[string]HTTPSource) http.Handler {
@@ -66,17 +67,16 @@ func (e *Engine) HTTP(token string, mappings map[string]HTTPSource) http.Handler
 }
 
 func (e *Engine) mappedEvent(mapping HTTPSource, value json.RawMessage) (chains.Message, error) {
-	data := any(value)
-	if mapping.Attribute != "" {
-		data = map[string]json.RawMessage{mapping.Attribute: value}
+	if mapping.Attribute == "" {
+		return chains.Message{}, fmt.Errorf("HTTP mapping requires an attribute")
 	}
-	m, err := chains.New(mapping.Type, mapping.Source, data)
-	if err != nil {
-		return m, err
+	data := map[string]json.RawMessage{mapping.Attribute: value}
+	return e.makeObservation(mapping.Source, mapping.Type, mapping.SchemaVersion, mapping.Device, mapping.stateAttribute(), value, data)
+}
+
+func (m HTTPSource) stateAttribute() string {
+	if m.StateAttribute != "" {
+		return m.StateAttribute
 	}
-	m.DeviceID, m.SchemaVersion = mapping.Device, mapping.SchemaVersion
-	if err = m.Validate(time.Now()); err != nil {
-		return m, err
-	}
-	return e.validateEvent(m)
+	return m.Attribute
 }

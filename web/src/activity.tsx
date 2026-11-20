@@ -7,7 +7,7 @@ const hidden = new Set(["service.heartbeat", "state.committed", "state.reported"
 const rowsPerPage = 150;
 const subject = (record: Activity) => record.rule
   ? [record.engine_id, record.rule].filter(Boolean).join(" / ")
-  : [record.service_id || record.source || record.engine_id, record.device_id].filter(Boolean).join(" / ");
+  : [record.service_id || record.source || record.engine_id, record.device_id || record.device_ids?.join(", ")].filter(Boolean).join(" / ");
 const filters = [["Event type", "type"], ["Service", "service"], ["Device", "device"],
   ["Engine", "engine"], ["Rule", "rule"], ["Correlation ID", "correlation"]] as const;
 type FilterKey = typeof filters[number][1];
@@ -25,7 +25,7 @@ export function WatchView(props: { services: Service[]; records: Activity[]; sta
     return {
       type: options([...records.map(r => r.type), ...props.services.flatMap(s => Object.keys(s.events ?? {})), "action.*", "rule.*", "state.*", "service.*", "manual.*"]),
       service: [...props.services.map(s => ({ value: s.uuid, label: s.name })), ...options(records.map(r => r.service_id || r.source)).filter(x => !props.services.some(s => s.uuid === x.value))],
-      device: options(known ? (known.devices ?? []).map(d => d.id) : [...props.services.flatMap(s => (s.devices ?? []).map(d => d.id)), ...records.map(r => r.device_id)]),
+      device: options(known ? (known.devices ?? []).map(d => d.id) : [...props.services.flatMap(s => (s.devices ?? []).map(d => d.id)), ...records.flatMap(r => r.device_ids ?? [r.device_id])]),
       engine: options(records.map(r => r.engine_id)), rule: options(records.map(r => r.rule)), correlation: options(records.map(r => r.correlation_id)),
     };
   });
@@ -35,7 +35,7 @@ export function WatchView(props: { services: Service[]; records: Activity[]; sta
     if (!f.type && !lowLevel() && hidden.has(r.type)) return false;
     if (f.type && !f.type.split(",").map(x => x.trim()).some(x => x.endsWith("*") ? r.type.startsWith(x.slice(0, -1)) : r.type === x)) return false;
     if (f.service && f.service !== r.service_id && f.service !== r.source) return false;
-    if (f.device && f.device !== r.device_id || f.engine && f.engine !== r.engine_id ||
+    if (f.device && f.device !== r.device_id && !r.device_ids?.includes(f.device) || f.engine && f.engine !== r.engine_id ||
       f.rule && f.rule !== r.rule || f.correlation && f.correlation !== r.correlation_id) return false;
     return [r.type, r.source, subject(r), r.summary, jsonText(r.data, false)].join(" ").toLowerCase().includes(search().toLowerCase().trim());
   }).reverse());

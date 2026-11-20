@@ -25,6 +25,7 @@ func (d DeviceRef) address() string { return d.ServiceID + "/" + d.DeviceID }
 
 type Host interface {
 	ResolveDevice(serviceName, deviceName string) (DeviceRef, error)
+	ResolveDevices(selectors map[string]string) []DeviceRef
 	State(address string) map[string]any
 	Act(context.Context, chains.Message, DeviceRef, string, string, map[string]any) (map[string]any, error)
 }
@@ -62,7 +63,7 @@ type opening struct {
 
 type wait struct {
 	pattern map[string]any
-	event   chan chains.Message
+	event   chan matchedEvent
 }
 type execution struct {
 	runtime  *Runtime
@@ -142,17 +143,43 @@ func (r *Runtime) Close() {
 	r.wg.Wait()
 }
 
+type matchedEvent struct {
+	message chains.Message
+	fields  map[string]any
+}
+
 func (r *Runtime) Dispatch(m chains.Message) {
-	fields := eventFields(m)
+	envelope := m
+	envelope.Observations = nil
+	fields := eventFields(envelope)
+	patches := make([]map[string]any, 0, len(m.Observations))
+	for _, observation := range m.Observations {
+		var data any
+		_ = json.Unmarshal(observation.Data, &data)
+		values := make(map[string]any, len(observation.Values))
+		for key, raw := range observation.Values {
+			var value any
+			_ = json.Unmarshal(raw, &value)
+			values[key] = value
+		}
+		patches = append(patches, map[string]any{
+			"device":    DeviceRef{m.ServiceID, observation.DeviceID},
+			"device_id": observation.DeviceID, "device_name": observation.DeviceName,
+			"device_class": observation.DeviceClass, "values": values, "data": data,
+		})
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {
 		return
 	}
 	for _, key := range []string{m.Type, ""} {
+		if key == "" && m.Type == chains.Changed {
+			continue
+		}
 		for w := range r.waits[key] {
-			if matches(w.pattern, fields) {
-				w.event <- m
+			if matched := observationMatch(w.pattern, fields, patches); matched != nil {
+				w.event <- matchedEvent{m, matched}
 				delete(r.waits[key], w)
 			}
 		}
@@ -160,11 +187,60 @@ func (r *Runtime) Dispatch(m chains.Message) {
 			delete(r.waits, key)
 		}
 		for _, o := range r.openings[key] {
-			if matches(o.pattern, fields) {
-				r.start(o, m)
+			if matched := observationMatch(o.pattern, fields, patches); matched != nil {
+				r.start(o, m, matched)
 			}
 		}
 	}
+}
+
+func observationMatch(pattern, fields map[string]any, patches []map[string]any) map[string]any {
+	if len(patches) == 0 {
+		if matches(pattern, fields) {
+			return fields
+		}
+		return nil
+	}
+	base := maps.Clone(pattern)
+	attribute, hasAttribute := base["attribute"]
+	value, hasValue := base["value"]
+	delete(base, "attribute")
+	delete(base, "value")
+	var selected []any
+	for _, patch := range patches {
+		candidate := maps.Clone(fields)
+		maps.Copy(candidate, patch)
+		if !matches(base, candidate) {
+			continue
+		}
+		if hasAttribute || hasValue {
+			values, _ := patch["values"].(map[string]any)
+			found := false
+			for key, item := range values {
+				if (!hasAttribute || equal(key, attribute)) && (!hasValue || equal(item, value)) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				continue
+			}
+		}
+		selected = append(selected, patch)
+	}
+	if len(selected) == 0 {
+		return nil
+	}
+	result := maps.Clone(fields)
+	all := make([]any, len(patches))
+	for i, patch := range patches {
+		all[i] = patch
+	}
+	result["observations"], result["matches"] = all, selected
+	if len(selected) == 1 {
+		maps.Copy(result, selected[0].(map[string]any))
+	}
+	return result
 }
 
 func matches(pattern, fields map[string]any) bool {
@@ -181,7 +257,7 @@ func matches(pattern, fields map[string]any) bool {
 	return true
 }
 
-func (r *Runtime) start(o *opening, m chains.Message) {
+func (r *Runtime) start(o *opening, m chains.Message, fields map[string]any) {
 	if o.running >= o.rule.Concurrency {
 		r.emitTrace("rule.skipped", o.rule.Name, "", m, "at capacity")
 		r.log.Debug("rule at capacity", "rule", o.rule.Name, "event", m.ID)
@@ -194,7 +270,7 @@ func (r *Runtime) start(o *opening, m chains.Message) {
 	}
 	e.match(m)
 	if o.binding != "" {
-		e.env[o.binding] = eventFields(m)
+		e.env[o.binding] = fields
 	}
 	r.wg.Add(1)
 	go func() {
@@ -260,7 +336,7 @@ func (r *Runtime) schedule(o *opening) {
 			m, _ := chains.New("time.matched", "scheduler", map[string]any{"time": next})
 			r.mu.Lock()
 			if !r.closed {
-				r.start(o, m)
+				r.start(o, m, eventFields(m))
 			}
 			r.mu.Unlock()
 		}
@@ -311,7 +387,7 @@ func (e *execution) until() (context.Context, context.CancelFunc) {
 
 func (e *execution) await(pattern map[string]any) (any, error) {
 	r := e.runtime
-	w := &wait{pattern: pattern, event: make(chan chains.Message, 1)}
+	w := &wait{pattern: pattern, event: make(chan matchedEvent, 1)}
 	key, _ := pattern["type"].(string)
 	r.mu.Lock()
 	if r.waits[key] == nil {
@@ -332,12 +408,12 @@ func (e *execution) await(pattern map[string]any) (any, error) {
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
-	case m := <-w.event:
+	case matched := <-w.event:
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		e.match(m)
-		return eventFields(m), nil
+		e.match(matched.message)
+		return matched.fields, nil
 	}
 }
 
@@ -442,6 +518,22 @@ func (e *execution) call(x *Expression) (any, error) {
 		}
 		e.runtime.log.Debug("rule read state", "rule", e.rule.Name, "event", e.last.ID, "address", ref.address())
 		return e.runtime.host.State(ref.address()), nil
+	case "Devices":
+		selectors := make(map[string]string, len(named))
+		for key, value := range named {
+			name, ok := value.(string)
+			if !ok || name == "" {
+				return nil, errors.New("device selectors must be nonempty strings")
+			}
+			selectors[key] = name
+		}
+		devices := e.runtime.host.ResolveDevices(selectors)
+		result := make([]any, len(devices))
+		for i, device := range devices {
+			result[i] = device
+		}
+		return result, nil
+
 	case "Device":
 		if source, found := named["service_id"]; found {
 			service, sok := source.(string)

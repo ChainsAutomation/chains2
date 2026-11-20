@@ -53,6 +53,7 @@ export function RecordDetails(props: { record: Activity; navigate: Navigate; onC
         ["Parent", "causation_id"], ["Correlation", "correlation_id"]] as const)}>
         {([label, key]) => <Show when={props.record[key]}><dt>{label}</dt><dd class="mono">{props.record[key]}</dd></Show>}
       </For>
+      <Show when={props.record.device_ids?.length}><dt>Devices</dt><dd class="mono">{props.record.device_ids?.join(", ")}</dd></Show>
     </dl>
     <Show when={props.record.summary}><p>{props.record.summary}</p></Show>
     <Show when={props.record.data !== undefined}><h3>{props.record.truncated ? "Payload preview" : "Payload"}</h3><pre>{jsonText(props.record.data)}</pre></Show>

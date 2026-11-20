@@ -11,7 +11,8 @@
       "device": "bathroom-sensor",
       "type": "humidity.reported",
       "schema_version": "1",
-      "attribute": "value"
+      "attribute": "value",
+      "state_attribute": "humidity"
     }
   }
 }

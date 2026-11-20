@@ -18,7 +18,7 @@ func TestReportAndRecovery(t *testing.T) {
 	now := time.Now().UTC()
 	report := func(id string, observed time.Time, value string) (Update, []Change) {
 		m := chains.Message{ID: id, Source: "sensor", DeviceID: "one", ObservedAt: observed}
-		u, c, err := a.Report(m, map[string]json.RawMessage{"value": json.RawMessage(value)})
+		u, c, err := a.Observe(m, []chains.Observation{{DeviceID: m.DeviceID, Values: map[string]json.RawMessage{"value": json.RawMessage(value)}}}, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -30,7 +30,7 @@ func TestReportAndRecovery(t *testing.T) {
 	}
 	later := now.Add(time.Second)
 	u, same := report("same", later, "42")
-	if len(same) != 0 || !u.Attributes["value"].ChangedAt.Equal(now) || !u.Attributes["value"].ObservedAt.Equal(later) {
+	if len(same) != 0 || !u.Devices[Address("sensor", "one")]["value"].ChangedAt.Equal(now) || !u.Devices[Address("sensor", "one")]["value"].ObservedAt.Equal(later) {
 		t.Fatalf("repeat: %v %v", u, same)
 	}
 	_, changed := report("changed", later.Add(time.Second), "43")

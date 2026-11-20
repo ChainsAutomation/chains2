@@ -22,6 +22,7 @@ class BundledServicesTest(TestCase):
         self.assertIn("frigate", output.getvalue().splitlines())
         self.assertIn("rflink", output.getvalue().splitlines())
         self.assertIn("radicale", output.getvalue().splitlines())
+        self.assertIn("tibber-pulse", output.getvalue().splitlines())
 
     def test_rflink_fields_and_signed_measurements(self):
         raw = b"20;A2;UPM/Esic;ID=0001;SWITCH=02;CMD=SET_LEVEL=14;TEMP=80DC;HUM=42;BAT=LOW;EXTRA=ab;\r"
@@ -55,8 +56,8 @@ class BundledServicesTest(TestCase):
                 sleep(.01)
             os.write(master, b"20;22;Kaku;ID=0005;")
             os.write(master, b"SWITCH=2;CMD=ON;\r\n20;23;Kaku;ID=0005;CMD=OFF;\r\n")
-            self.assertEqual(broker.until("rflink.signal")["data"]["command"], "ON")
-            self.assertEqual(broker.until("rflink.signal")["data"]["command"], "OFF")
+            self.assertEqual(broker.until_observation("rflink.signal")["data"]["command"], "ON")
+            self.assertEqual(broker.until_observation("rflink.signal")["data"]["command"], "OFF")
 
     def test_frigate_parser(self):
         frame = parse_update(b'{"type":"end","before":{"x":1},"after":{"id":"1","camera":"front","label":"person","current_zones":["door"]}}')
@@ -87,17 +88,31 @@ class BundledServicesTest(TestCase):
         with patch("chains_automation.services.frigate.MQTT", Source):
             with Frigate("redis://localhost", service_id="frigate-fixture", transport=destination,
                          settings={"mqtt_uri": "mqtt://frigate", "topic_prefix": "home/cameras",
-                                   "topics": ["reviews"]}):
+                                   "topics": ["reviews", "events"]}):
                 topic = "home/cameras/reviews"
                 frame = b'{"type":"new","after":{"id":"r1","camera":"front","severity":"alert","data":{"zones":["yard"]}}}'
                 source.put(Delivery(topic, frame, retained=True))
                 source.put(Delivery(topic, b'invalid JSON'))
                 source.put(Delivery(topic, frame))
                 source.put(Delivery(topic, frame.replace(b'"new"', b'"update"')))
-                first = destination.until("frigate.review")
-                second = destination.until("frigate.review")
+                source.put(Delivery(topic, frame.replace(b'"front"', b'"side"').replace(b'"r1"', b'"r2"')))
+                source.put(Delivery("home/cameras/events",
+                                    b'{"type":"end","after":{"id":"o1","camera":"front","label":"person"}}'))
+                reviews = [destination.until_observation("frigate.review") for _ in range(3)]
+                object_event = destination.until_observation("frigate.object")
+                first, second, third = reviews
                 self.assertEqual(first["data"]["zones"], ["yard"])
-                self.assertEqual(second["data"]["phase"], "update")
                 self.assertEqual(first["data"]["native_id"], second["data"]["native_id"])
-                self.assertNotEqual(first["id"], second["id"])
-        self.assertEqual(closed, [("mqtt://frigate", ("home/cameras/reviews",))])
+                self.assertIn("payload", first["data"])
+                self.assertEqual(second["device_id"], "front")
+                self.assertEqual(second["values"]["last_review"], {
+                    "phase": "update", "native_id": "r1", "label": None, "severity": "alert", "zones": ["yard"],
+                })
+                self.assertEqual(third["device_id"], "side")
+                self.assertEqual(third["values"]["last_review"]["native_id"], "r2")
+                self.assertEqual(object_event["device_id"], "front")
+                self.assertEqual(object_event["data"]["label"], "person")
+                self.assertEqual(object_event["values"]["last_object"]["phase"], "end")
+                self.assertNotIn("payload", object_event["values"]["last_object"])
+
+        self.assertEqual(closed, [("mqtt://frigate", ("home/cameras/reviews", "home/cameras/events"))])

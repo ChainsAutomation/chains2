@@ -24,7 +24,7 @@ export CHAINS_BUS="mqtt://127.0.0.1:$mqtt_port"
 export CHAINS_NAMESPACE="web-fixture"
 printf 'listener %s 127.0.0.1\nallow_anonymous true\n' "$mqtt_port" > "$temp_dir/mosquitto.conf"
 cat > "$temp_dir/engine.json" <<'JSON'
-{"http":{"humidity":{"source":"humidity-sensor","device":"bathroom-sensor","type":"humidity.reported","schema_version":"1","attribute":"value"}}}
+{"http":{"humidity":{"source":"humidity-sensor","device":"bathroom-sensor","type":"humidity.reported","schema_version":"1","attribute":"value","state_attribute":"humidity"}}}
 JSON
 printf '{}\n' > "$temp_dir/service.json"
 cat > "$temp_dir/manual.chains" <<'RULE'

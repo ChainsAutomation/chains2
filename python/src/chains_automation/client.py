@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import logging
 import re
@@ -11,7 +11,7 @@ from typing import Any, Callable, Protocol
 from uuid import uuid4
 
 
-VERSION = 1
+VERSION = 2
 MAX_PAYLOAD = 1 << 20
 IDENTIFIER = re.compile(r"[a-zA-Z0-9_.:-]{1,128}")
 CBOR_MARKER = b"\xd9\xd9\xf7"
@@ -43,6 +43,13 @@ def message(kind: str, source: str, data: Any, *, observed_at: str | None = None
         "observed_at": observed_at or datetime.now(timezone.utc).isoformat(),
         "data": data,
     }
+
+
+def observation_message(source, kind, observations, *, schema_version="1", **fields):
+    fields.setdefault("expires_at", (datetime.now(timezone.utc) + timedelta(minutes=1)).isoformat())
+    return message("observation.submitted", source,
+                   {"event_type": kind, "observations": observations},
+                   schema_version=schema_version, **fields)
 
 
 def route(value: Message) -> str:
@@ -123,20 +130,20 @@ class Client:
             "idempotent_actions": idempotent_actions or [],
         }))
 
-    def event(self, kind: str, data: Any, *, device: str = "", schema_version: str = "1") -> None:
-        self.send(message(
-            kind, self.source, data, service_type=self.service_type,
-            device_id=device, schema_version=schema_version,
-        ))
+    def event(self, kind: str, data: Any, *, device: str, values: dict[str, Any],
+              schema_version: str = "1") -> None:
+        self.observe_batch(kind, [{"device_id": device, "values": values, "data": data}],
+                           schema_version=schema_version)
 
-    def report(self, device: str, values: dict[str, Any], *, cause: Message | None = None) -> None:
+    def observe_batch(self, kind, observations, *, schema_version="1", cause=None):
         meta = caused_by(cause) if cause else {}
         if cause and cause.get("action_id"):
             meta["action_id"] = cause["action_id"]
-        self.send(message(
-            "state.reported", self.source, values,
-            service_type=self.service_type, device_id=device, **meta,
-        ))
+        self.send(observation_message(self.source, kind, observations,
+                                      schema_version=schema_version, **meta))
+
+    def report(self, device: str, values: dict[str, Any], *, cause: Message | None = None) -> None:
+        self.observe_batch("device.observed", [{"device_id": device, "values": values}], cause=cause)
 
     def outcome(self, request: Message, status: str, error: str = "", **result: Any) -> None:
         if status not in {"accepted", "submitted", "completed", "failed"}:

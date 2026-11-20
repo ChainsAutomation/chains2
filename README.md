@@ -20,7 +20,7 @@ go build -buildvcs=false -o chains ./cmd/chains
 mosquitto_pub -q 1 -t sensors/bathroom/humidity -m 72.5
 ```
 
-A reading of at least 70 turns the simulated fan on if its reported power is off. The sensor adapter also reports humidity to the state authority. It accepts raw numbers by default. A retained MQTT reading seeds reported state without emitting a live reading event. To map another device, set `sensor_topic` and the config file's `sensor` object. The object can override `device`, `class`, `event`, `attribute`, `field`, `format`, and `schema`. Supported input formats are `number`, `boolean` (including `ON`/`OFF`), `string`, and `json`. Supply a matching JSON Schema when changing the event payload.
+A reading of at least 70 turns the simulated fan on if its reported power is off. The sensor adapter writes humidity to State in the same observation that triggers the rule. It accepts raw numbers by default. A retained MQTT reading seeds reported state without emitting a live reading event. To map another device, set `sensor_topic` and the config file's `sensor` object. The object can override `device`, `class`, `event`, `attribute`, `field`, `format`, and `schema`. Supported input formats are `number`, `boolean` (including `ON`/`OFF`), `string`, and `json`. Supply a matching JSON Schema when changing the event payload.
 
 For Redis, add `-bus redis://localhost:6379` to the engine, fan, and sensor commands. Also pass `-sensor-broker mqtt://localhost:1883` to the sensor adapter for its device input. Redis is the system bus in this deployment, while MQTT carries the raw sensor feed. The Redis adapter uses a standalone Redis server, one stream for all messages and one stream per message type, and a bounded diagnostic history. Each subscriber follows new messages independently.
 
@@ -50,13 +50,24 @@ else:
     Action('writestring', service_name=LEDPanel, device_name=panel0, value="Light is on!")
 ```
 
-- `Event()` waits for matching envelope or payload fields. A matched event exposes envelope fields such as `ev.device_id`, its payload as `ev.data`, and its stable device reference as `ev.device`. `state.changed` carries `previous`, `value`, `initial`, and `revision` under `ev.data`.
+- `Event()` matches envelope fields, device selectors, State attributes and values, or event payload fields. Each rule trigger or pending wait gets one match per observation, even if several devices match. `ev.matches` contains the matching device patches and `ev.observations` contains the full batch. A patch has `device`, `device_id`, `values`, and `data`. If exactly one patch matches, `ev.device` and `ev.data` are shortcuts.
+- `Device(service_name=..., device_name=...)` and name-based actions require a unique device. `Devices(service_name=..., device_name=...)` returns every match in ID order, including an empty list if none match. The plural selector can combine any of `service_id`, `service_name`, `device_id`, and `device_name`. The singular selector also takes an ID pair. `State(device)` reads the latest State. Use the event's `values` for the exact observation that triggered the rule.
+- `Event(type="state.changed")` matches a changed leaf and exposes `attribute`, `previous`, `value`, `initial`, and `revision` under `ev.data`. Untyped `Event()` skips these derived notifications. An equal reading still triggers its ordinary event and refreshes `observed_at`, while `changed_at` keeps the last value-change time.
 - An opening `Event()`, `Every()`, or `Time()` starts a run after optional pure local assignments. Further waits suspend the current run. `rule.concurrency` defaults to one. `rule.timeout` defaults to 300 seconds and starts at the opening match. The same deadline applies through later waits, actions, and computation. A run ends on expiry, `return`, or the end of the file.
 - Read the latest reported attribute with `State(ev.device).power`. A missing attribute evaluates to `null`. Use `ev.data.power` for the value carried by the event itself. Read attribute timestamps under `State(ev.device)._attributes.power`. Both state values and event fields can be used directly in action arguments.
 - Use `Action("set_power", device=ev.device, value=false)` for a known device, or supply a unique `service_name` and `device_name` pair. `Device(service_id="sim-fan", device_id=fan)` builds a reference from stable IDs. `Device()` also accepts the name pair. Unbound bare words such as `fan` are string shorthand in selectors and named target fields. Quote literal names containing spaces or punctuation. Other value expressions use explicit literals or declared variables.
 - Action arguments are validated against the registered schema. Use `schema_version="2"` to select a schema version. The default is `"1"`. Actions return `completed`, `submitted`, `failed`, or `timed_out`. The engine traces `accepted` separately. Declared idempotent actions may retry while awaiting acceptance. A late device observation can still update state.
 - Use `#` for comments. The language supports single- and double-quoted strings, lists, objects, arithmetic, comparisons, `if`/`elseif`/`else`, `switch`/`case`/`default`, `while`, and `for item in items`. Use `Has(object, key)` to check whether a field exists.
 - `Every("1s")` uses elapsed time. `Time(month=12, day=25, hour=0, minute=0)` matches local Christmas midnight. Calendar selectors support year, month, week, day, weekday (Sunday is 0), hour, minute, and second. Seconds default to zero, an hour by itself defaults to minute zero, and a date without clock fields uses midnight. Nonexistent local times are skipped and repeated local times fire once.
+
+A batch can update several devices with the same display name. This rule checks each matching device's exact reported volume.
+
+```text
+ev = Event(service_name=Amplifier, device_name=Main, attribute=volume)
+for match in ev.matches:
+    if match.values.volume > 30:
+        Action("set_volume", device=match.device, volume=30)
+```
 
 The Go `rules` package exposes the structured rule model and `Parse`, `Validate`, and `Format` for tools that generate rules.
 
@@ -77,15 +88,16 @@ To enable HTTP ingress, set `listen`, a bearer token (for example `CHAINS_TOKEN`
       "device": "bathroom-sensor",
       "type": "humidity.reported",
       "schema_version": "1",
-      "attribute": "value"
+      "attribute": "value",
+      "state_attribute": "humidity"
     }
   }
 }
 ```
 
-With that source registered, a POST to `/events/humidity` bearing the token and a body of `72.5` submits a normal event. Use a TLS proxy for remote HTTP ingress. MQTT brokers should restrict publish/subscribe access by namespace and service identity. Redis clients with stream write permission are trusted participants in the deployment. Use a private broker and TLS URLs (`mqtts://`, `rediss://`) for remote links.
+With that source registered, a POST to `/events/humidity` bearing the token and a body of `72.5` submits an observation. `attribute` names the event payload field. `state_attribute` names the registered State attribute and defaults to `attribute`. Use a TLS proxy for remote HTTP ingress. MQTT brokers should restrict publish/subscribe access by namespace and service identity. Redis clients with stream write permission are trusted participants in the deployment. Use a private broker and TLS URLs (`mqtts://`, `rediss://`) for remote links.
 
-Go integrations use the `sdk` package with a `bus.Bus`. Python integrations can run `uv sync --project python --locked` and import `chains_automation`. Both SDKs support registration, publishing, reported state, and handling actions. Register stable service UUIDs and schema versions. Use JSON for readable messages or CBOR for compact structured data. The transport and codec boundaries are independent of the DSL and SQLite.
+Go integrations use the `sdk` package with a `bus.Bus`. Python integrations can run `uv sync --project python --locked` and import `chains_automation`. Both SDKs support registration, atomic single- and multi-device observations, silent State seeding, and actions. An observation updates State at `service_id/device_id/attribute` before rules see it. One batch belongs to one service and one event type, with one State revision for all its devices. The wire protocol is version 2. Upgrade engines and publishers together. SQLite keeps values at existing registered IDs. Frigate starts its camera paths from new observations. Radicale discards any queued envelopes from the previous wire version. Register stable service UUIDs and schema versions. Use JSON for readable messages or CBOR for compact structured data. The transport and codec boundaries are independent of the DSL and SQLite.
 
 ## Verification
 
@@ -125,7 +137,7 @@ Retained device reports seed state without starting rules. Live button actions c
 
 ## Author a Python service
 
-Start a service with `chains-service MODULE:CLASS`. The [Python SDK reference](docs/sdk-python.md) covers configuration, lifecycle hooks, events, actions, state, and runnable examples. See [bundled services](docs/services-python.md) for RFLink, Frigate, and Radicale.
+Start a service with `chains-service MODULE:CLASS`. The [Python SDK reference](docs/sdk-python.md) covers configuration, lifecycle hooks, events, actions, state, and runnable examples. See [bundled services](docs/services-python.md) for RFLink, Frigate, Radicale, and Tibber Pulse.
 
 ## Author a Go service
 

@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -26,6 +25,7 @@ type Options struct {
 	AuthorityID     string
 	Database        string
 	Rules           []rules.Rule
+	EventTypes      []string
 	Calendar        rules.Calendar
 	Encoding        chains.Encoding
 	ActionTimeout   time.Duration
@@ -42,6 +42,7 @@ type Engine struct {
 	authority       *state.Authority
 	view            *state.View
 	runtime         *rules.Runtime
+	eventTypes      []string
 	log             *slog.Logger
 	mu              sync.Mutex
 	actions         map[string]*pending
@@ -53,7 +54,7 @@ type Engine struct {
 	queuedUpdates   []state.Update
 	snapshotPending string
 	snapshotSent    time.Time
-	pendingChanges  []chains.Message
+	pendingEvents   []chains.Message
 	schemas         sync.Map
 	local           *hostedService
 	availability    map[string]presence
@@ -81,7 +82,7 @@ func Open(ctx context.Context, b bus.Bus, o Options) (*Engine, error) {
 	if log == nil {
 		log = slog.Default()
 	}
-	e := &Engine{node: sdk.Client{Bus: b, Encoding: o.Encoding, Source: o.ID}, authorityID: o.AuthorityID, view: state.NewView(), log: log, actions: map[string]*pending{}, seen: map[string]bool{}, availability: map[string]presence{}}
+	e := &Engine{node: sdk.Client{Bus: b, Encoding: o.Encoding, Source: o.ID}, authorityID: o.AuthorityID, eventTypes: o.EventTypes, view: state.NewView(), log: log, actions: map[string]*pending{}, seen: map[string]bool{}, availability: map[string]presence{}}
 	if o.LocalService != nil {
 		id := o.LocalService.ID()
 		if o.ID != o.AuthorityID || id == o.ID || !chains.Segment(id) {
@@ -95,7 +96,16 @@ func Open(ctx context.Context, b bus.Bus, o Options) (*Engine, error) {
 			return nil, err
 		}
 		e.authority, e.view = a, a.View
+		if o.OperatorAPI {
+			if err := e.registerOperator(); err != nil {
+				a.Close()
+				return nil, err
+			}
+		}
 		e.ready.Store(true)
+	}
+	if e.node.Encoding == "" {
+		e.node.Encoding = chains.JSON
 	}
 	e.actionTimeout = o.ActionTimeout
 	if e.actionTimeout <= 0 {
@@ -177,7 +187,7 @@ func (e *Engine) Run(ctx context.Context) error {
 			if d.Reset {
 				if e.authority == nil {
 					e.ready.Store(false)
-					e.pendingChanges = nil
+					e.pendingEvents = nil
 					e.queuedUpdates = nil
 					e.snapshotParts = nil
 					e.snapshotPending = ""
@@ -259,6 +269,10 @@ func (e *Engine) handle(ctx context.Context, m chains.Message) error {
 			return nil
 		}
 		return e.register(ctx, m)
+	case chains.ObservationSubmitted:
+		if e.authority != nil {
+			return e.observe(ctx, m)
+		}
 	case chains.Report:
 		if e.authority == nil {
 			return nil
@@ -292,7 +306,7 @@ func (e *Engine) handle(ctx context.Context, m chains.Message) error {
 			e.ready.Store(false)
 			e.requestSnapshot(ctx)
 		} else if e.ready.Load() {
-			e.flushChanges()
+			e.flushEvents()
 		}
 	case chains.SnapshotRequest:
 		if e.authority != nil && m.Target == e.node.Source {
@@ -304,21 +318,7 @@ func (e *Engine) handle(ctx context.Context, m chains.Message) error {
 		}
 		return e.receiveSnapshot(ctx, m)
 	case chains.Changed:
-		if m.Source != e.authorityID {
-			return errors.New("untrusted state change")
-		}
-		var c state.Change
-		if err := json.Unmarshal(m.Data, &c); err != nil {
-			return err
-		}
-		epoch, rev := e.view.Position()
-		if !e.ready.Load() || epoch != c.Epoch || rev < c.Revision {
-			if len(e.pendingChanges) < 1024 {
-				e.pendingChanges = append(e.pendingChanges, m)
-			}
-			return nil
-		}
-		e.runtime.Dispatch(m)
+		return e.receiveObservation(ctx, m)
 	case chains.Request:
 		if e.local != nil && m.Target == e.local.service.ID() {
 			return e.remoteLocalAction(ctx, m)
@@ -333,34 +333,29 @@ func (e *Engine) handle(ctx context.Context, m chains.Message) error {
 			e.runtime.Dispatch(m)
 		}
 	default:
-		if !e.ready.Load() {
-			return nil
+		if len(m.Observations) == 0 {
+			return errors.New("expected committed observations")
 		}
-		normalized, err := e.validateEvent(m)
-		if err != nil {
-			return err
-		}
-		e.runtime.Dispatch(normalized)
+		return e.receiveObservation(ctx, m)
 	}
 	return nil
 }
 
-func (e *Engine) flushChanges() {
+func (e *Engine) flushEvents() {
 	epoch, rev := e.view.Position()
-	pending := e.pendingChanges[:0]
-	for _, m := range e.pendingChanges {
-		var c state.Change
-		if json.Unmarshal(m.Data, &c) != nil || m.Validate(time.Now()) != nil || c.Epoch != epoch {
+	pending := e.pendingEvents[:0]
+	for _, m := range e.pendingEvents {
+		if m.Validate(time.Now()) != nil || m.Epoch != epoch {
 			continue
 		}
-		if c.Revision <= rev {
+		if m.Revision <= rev {
 			e.runtime.Dispatch(m)
 		} else {
 			pending = append(pending, m)
 		}
 	}
-	clear(e.pendingChanges[len(pending):])
-	e.pendingChanges = pending
+	clear(e.pendingEvents[len(pending):])
+	e.pendingEvents = pending
 }
 
 func (e *Engine) register(ctx context.Context, m chains.Message) error {
@@ -368,13 +363,16 @@ func (e *Engine) register(ctx context.Context, m chains.Message) error {
 	if err := json.Unmarshal(m.Data, &s); err != nil {
 		return err
 	}
+	if s.UUID == chains.OperatorService {
+		return errors.New("reserved service ID")
+	}
 	if e.local != nil && s.UUID == e.local.service.ID() {
 		if previous, exists := e.view.Service(s.UUID); exists && previous.ServiceType != s.ServiceType {
 			return errors.New("local service ID is already registered to a different service type")
 		}
 	}
 	for name := range s.Events {
-		if name == operator.TraceType || strings.HasPrefix(name, "manual.") {
+		if name == operator.TraceType || reservedEvent(name) {
 			return errors.New("reserved event type")
 		}
 	}
@@ -404,6 +402,15 @@ func (e *Engine) register(ctx context.Context, m chains.Message) error {
 			return errors.New("invalid or duplicate device registration")
 		}
 		ids[d.ID] = true
+	}
+	if s.RetainDevices {
+		if previous, ok := e.view.Service(s.UUID); ok && previous.ServiceType == s.ServiceType {
+			for _, d := range previous.Devices {
+				if !ids[d.ID] {
+					s.Devices = append(s.Devices, d)
+				}
+			}
+		}
 	}
 	u, err := e.authority.Register(m, s)
 	if err != nil || u.Revision == 0 {
@@ -436,32 +443,10 @@ func (e *Engine) report(ctx context.Context, m chains.Message) error {
 			return fmt.Errorf("unknown attribute %q", name)
 		}
 	}
-	u, changes, err := e.authority.Report(m, values)
-	if err != nil || u.Revision == 0 {
-		return err
+	if !m.Silent {
+		return errors.New("state reports are reserved for silent seeds")
 	}
-	if err := e.publishUpdate(ctx, m, u); err != nil {
-		return err
-	}
-	if m.Silent {
-		return nil
-	}
-	for _, change := range changes {
-		event, err := chains.New(chains.Changed, e.node.Source, change)
-		if err != nil {
-			return err
-		}
-		event.DeviceID, event.DeviceClass, event.ServiceType, event.ActionID = m.DeviceID, d.Class, s.ServiceType, m.ActionID
-		event.ServiceID = m.Source
-		event.ObservedAt = m.ObservedAt
-		event.CausedBy(m)
-		expires := time.Now().Add(time.Minute)
-		event.ExpiresAt = &expires
-		if err = e.publishDerived(ctx, event); err != nil {
-			return err
-		}
-	}
-	return nil
+	return e.commitObservation(ctx, m, s, chains.ObservationBatch{Observations: []chains.Observation{{DeviceID: m.DeviceID, Values: values}}})
 }
 
 func (e *Engine) schema(raw json.RawMessage) (*jsonschema.Resolved, error) {
@@ -493,27 +478,6 @@ func (e *Engine) validate(raw, body json.RawMessage) error {
 		return err
 	}
 	return schema.Validate(value)
-}
-
-func (e *Engine) validateEvent(m chains.Message) (chains.Message, error) {
-	if strings.HasPrefix(m.Type, "manual.") {
-		return e.normalizeManual(m)
-	}
-	s, ok := e.view.Service(m.Source)
-	if !ok {
-		return m, errors.New("event source is unregistered")
-	}
-	m.ServiceID = m.Source
-	m.ServiceType = s.ServiceType
-	m.DeviceClass = ""
-	if m.DeviceID != "" {
-		d, ok := device(s, m.DeviceID)
-		if !ok {
-			return m, errors.New("event device is unregistered")
-		}
-		m.DeviceClass = d.Class
-	}
-	return m, e.validate(s.Events[m.Type][m.SchemaVersion], m.Data)
 }
 
 func device(s chains.Service, id string) (chains.Device, bool) {

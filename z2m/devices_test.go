@@ -25,11 +25,16 @@ func TestDiscoveryTranslationAndRename(t *testing.T) {
 	}
 	raw := []byte(`{"state":"ON","brightness":30,"action":"single","unadvertised":true}`)
 	live, err := b.translate(d, raw, false)
-	if err != nil || len(live) != 2 || live[0].Type != chains.Report || live[1].Type != ActionEvent || live[1].CausationID != live[0].ID {
+	if err != nil || len(live) != 1 || live[0].Type != chains.ObservationSubmitted {
 		t.Fatalf("live: %+v %v", live, err)
 	}
+	var batch chains.ObservationBatch
+	if json.Unmarshal(live[0].Data, &batch) != nil || batch.EventType != ActionEvent || len(batch.Observations) != 1 ||
+		string(batch.Observations[0].Values["last_action"]) != `"single"` {
+		t.Fatalf("invalid batch: %+v", batch)
+	}
 	again, _ := b.translate(d, raw, false)
-	if again[1].ID == live[1].ID {
+	if again[0].ID == live[0].ID {
 		t.Fatal("identical press was collapsed")
 	}
 	retained, _ := b.translate(d, raw, true)

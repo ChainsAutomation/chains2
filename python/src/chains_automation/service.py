@@ -19,17 +19,17 @@ from uuid import uuid4
 
 from jsonschema import Draft202012Validator
 
-from .client import Client, IDENTIFIER, MAX_PAYLOAD, caused_by, decode, encode, message, route
+from .client import Client, IDENTIFIER, MAX_PAYLOAD, caused_by, decode, encode, message, observation_message, route
 from .description import Capability
 from .service_config import ServiceConfig, stable_identity
 from .transports import MQTT, RedisStreams
 
 
 log = logging.getLogger(__name__)
-DEFAULT_DEVICE = "default"
+DEFAULT_DEVICE = "system"
 CONTROL_TYPES = ("action.requested", "state.query.responded")
 INTERNAL_TYPES = {
-    "action.requested", "state.reported", "state.committed", "state.head",
+    "action.requested", "state.reported", "observation.submitted", "device.observed", "state.committed", "state.head",
     "state.query.requested", "state.query.responded", "state.snapshot.requested",
     "state.snapshot.responded", "service.registered", "service.heartbeat",
 }
@@ -52,7 +52,7 @@ def event_method(method):
         cap = self._events[method.__name__]
         bound = cap.signature.bind(*args, **kwargs)
         bound.apply_defaults()
-        token = _event.set((self, cap, bound.arguments))
+        token = _event.set((self, method.__name__, bound.arguments))
         try:
             return method(self, *args, **kwargs)
         finally:
@@ -66,6 +66,8 @@ class Service:
     service_type = None
     settings_type = None
     attributes = ()
+    event_attributes = {}
+    retain_devices = False
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
@@ -130,7 +132,7 @@ class Service:
         self._subscriptions.update(types)
 
     def describe_devices(self):
-        return [{"id": DEFAULT_DEVICE, "name": "Default", "class": "device",
+        return [{"id": DEFAULT_DEVICE, "name": "System", "class": "device",
                  "attributes": list(self.attributes)}]
 
     def describe(self):
@@ -167,6 +169,12 @@ class Service:
                 raise ValueError(f"All versions of {cap.name} must agree on idempotence")
         self._default_device = DEFAULT_DEVICE if DEFAULT_DEVICE in ids else ids[0]
         for device in devices:
+            attributes = set(device.get("attributes", []))
+            for method, cap in caps["event"].items():
+                attribute = self._event_attribute(method)
+                if attribute and (cap.device or self._default_device) == device["id"]:
+                    attributes.add(attribute)
+            device["attributes"] = sorted(attributes)
             actions = {cap.name for cap in caps["action"].values()
                        if (cap.device or self._default_device) == device["id"]}
             device["actions"] = sorted(actions | {"get_state"})
@@ -186,6 +194,7 @@ class Service:
             self.config.service_id = stable_identity(self.service_type, self.config.instance)
         return {"uuid": self.config.service_id, "service_type": self.service_type,
                 "name": self.config.name or self.config.instance, "devices": devices,
+                "retain_devices": self.retain_devices,
                 "events": versions(schemas["event"]), "actions": versions(schemas["action"]),
                 "idempotent_actions": sorted(idempotent)}
 
@@ -329,7 +338,23 @@ class Service:
         return self._stop.is_set()
 
     def _register(self):
-        self._send(message("service.registered", self.config.service_id, self._registration))
+        with self._send_lock:
+            self._client.send(message("service.registered", self.config.service_id, self._registration))
+
+    def register_device(self, device):
+        """Publish an updated description before using a newly discovered device."""
+        device = deepcopy(device)
+        device_id = device["id"]
+        if not IDENTIFIER.fullmatch(device_id) or not IDENTIFIER.fullmatch(device["class"]):
+            raise ValueError("Invalid device description")
+        device.setdefault("actions", ["get_state"])
+        with self._send_lock:
+            if device_id in self._devices:
+                return
+            registration = {**self._registration, "devices": [*self._registration["devices"], device]}
+            self._client.send(message("service.registered", self.config.service_id, registration))
+            self._registration = registration
+            self._devices[device_id] = device
 
     def _send(self, value):
         if self._client is None:
@@ -337,39 +362,83 @@ class Service:
         with self._send_lock:
             self._client.send(value)
 
-    def _send_event(self, *, _device=None, **fields):
+    def _event_attribute(self, method):
+        return self.event_attributes.get(method, "last_" + method.removeprefix("event_"))
+
+    def _send_event(self, *, _device=None, _values=None, **fields):
         context = _event.get()
         if context is None or context[0] is not self:
             raise RuntimeError("_send_event() must be called in an event_ method")
-        _, cap, arguments = context
-        self._send(self._event_message(cap, {**arguments, **fields}, _device,
-                                       cause=_action.get()))
+        _, method, arguments = context
+        self._publish_observation(self._prepare_event(method, {**arguments, **fields},
+                                                      device=_device, values=_values))
 
     @staticmethod
     def _action_context():
         """Return a serializable snapshot of the active action, if any."""
         return deepcopy(_action.get())
 
-    def _prepare_event(self, method, data, *, device=None, cause=None, event_id=None):
-        """Build a validated event envelope for deferred publication."""
-        return self._event_message(self._events[method], data, device, cause=cause,
-                                   event_id=event_id)
-
-    def _event_message(self, cap, data, device, *, cause=None, event_id=None):
-        cap.validator.validate(data)
+    def _prepare_event(self, method, data, *, device=None, values=None, cause=None, event_id=None):
+        """Build a validated observation envelope for deferred publication."""
+        cap = self._events[method]
         device = device or cap.device or self._default_device
-        if device not in self._devices:
-            raise ValueError("Unknown event device")
+        if values is None:
+            values = {self._event_attribute(method): data}
+        return self._prepare_observations(cap.name,
+            [{"device_id": device, "values": values, "data": data}],
+            cap.version, cause=cause, event_id=event_id)
+
+    def observe_batch(self, kind, observations, *, schema_version="1"):
+        """Publish device patches under one event type and one central revision."""
+        self._publish_observation(self._prepare_observations(kind, observations, schema_version))
+
+    def _prepare_observations(self, kind, observations, version, *, cause=None, event_id=None):
+        cause = cause or _action.get()
         metadata = caused_by(cause) if cause else {}
         if cause and cause.get("action_id"):
             metadata["action_id"] = cause["action_id"]
-        result = message(cap.name, self.config.service_id, data, device_id=device,
-                         service_type=self.service_type, schema_version=cap.version, **metadata)
+        cap = next((cap for cap in self._events.values()
+                    if cap.name == kind and cap.version == version), None)
+        if cap is None and kind != "device.observed":
+            raise ValueError("Unknown event schema")
+        seen = set()
+        if not observations:
+            raise ValueError("Empty observation batch")
+        for patch in observations:
+            device, values = patch["device_id"], patch["values"]
+            if device not in self._devices or device in seen or not isinstance(values, dict) or not values:
+                raise ValueError("Invalid observation device or values")
+            seen.add(device)
+            for name in values:
+                self._check_attribute(device, name)
+            if cap is not None:
+                cap.validator.validate(patch.get("data", values))
+        result = observation_message(self.config.service_id, kind, observations,
+                                     schema_version=version, **metadata)
         if event_id is not None:
             if not IDENTIFIER.fullmatch(event_id):
                 raise ValueError("Invalid event ID")
             result["id"] = event_id
         return result
+
+    def _publish_observation(self, envelope):
+        self._send(envelope)
+        stamp = envelope["observed_at"]
+        at = datetime.fromisoformat(stamp)
+        observations = envelope["data"]["observations"]
+        with self._state_lock:
+            for patch in observations:
+                current = self._state.get(patch["device_id"], {})
+                if any(name in current and at < datetime.fromisoformat(current[name]["observed_at"])
+                       for name in patch["values"]):
+                    return
+            for patch in observations:
+                target = self._state.setdefault(patch["device_id"], {})
+                for name, value in patch["values"].items():
+                    old = target.get(name)
+                    same = old and json.dumps(old["value"], sort_keys=True) == json.dumps(value, sort_keys=True)
+                    changed = old["changed_at"] if same else stamp
+                    target[name] = {"value": deepcopy(value), "observed_at": stamp, "changed_at": changed}
 
     def _heartbeat(self):
         interval = self.config.heartbeat_interval
@@ -381,11 +450,11 @@ class Service:
         if attribute not in self._devices.get(device, {}).get("attributes", ()):
             raise ValueError(f"Undeclared state attribute {device}/{attribute}")
 
-    def set_state(self, device=DEFAULT_DEVICE, /, **attributes):
-        self._update_state(device, False, utcnow(), attributes)
+    def set_state(self, device=None, /, **attributes):
+        self._update_state(device or getattr(self, "_default_device", DEFAULT_DEVICE), False, utcnow(), attributes)
 
-    def seed_state(self, device=DEFAULT_DEVICE, /, *, observed_at=None, **attributes):
-        self._update_state(device, True, utcnow() if observed_at is None else observed_at, attributes)
+    def seed_state(self, device=None, /, *, observed_at=None, **attributes):
+        self._update_state(device or getattr(self, "_default_device", DEFAULT_DEVICE), True, utcnow() if observed_at is None else observed_at, attributes)
 
     def _update_state(self, device, silent, observed_at, attributes, *, restored_change=None):
         if not isinstance(observed_at, datetime) or observed_at.utcoffset() is None:
@@ -478,9 +547,12 @@ class Service:
             meta = caused_by(cause) if cause else {}
             if cause and cause.get("action_id"):
                 meta["action_id"] = cause["action_id"]
-            self._send(message("state.reported", self.config.service_id, updates,
-                               device_id=device, service_type=self.service_type,
-                               observed_at=stamp, silent=silent, **meta))
+            if silent:
+                self._send(message("state.reported", self.config.service_id, updates,
+                                   device_id=device, observed_at=stamp, silent=True))
+            else:
+                self._send(observation_message(self.config.service_id, "device.observed",
+                           [{"device_id": device, "values": updates}], observed_at=stamp, **meta))
             with self._state_lock:
                 if self._pending and self._pending[0] is report:
                     self._pending.popleft()

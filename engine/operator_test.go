@@ -59,7 +59,7 @@ func testOperator(t *testing.T, connect connectFunc) {
 		return e
 	}
 	// The authority can omit the owner's application event types from its normal subscription.
-	e := start(f.open(t, chains.Registration, chains.Report, chains.Heartbeat, chains.SnapshotRequest), Options{
+	e := start(f.open(t, chains.Registration, chains.Report, chains.ObservationSubmitted, chains.Heartbeat, chains.SnapshotRequest), Options{
 		ID: authorityID, AuthorityID: authorityID, Database: ":memory:", OperatorAPI: true, OpenOperatorBus: opener,
 	})
 	workerRule, err := rules.Parse("manual-fan", `Event(type="manual.test")
@@ -76,7 +76,7 @@ Action("set_power", service_name=Fan, device_name=fan, value=true)
 	case <-time.After(5 * time.Second):
 		t.Fatal("observer did not start")
 	}
-	handler := e.HTTP("token", map[string]HTTPSource{"humidity": {Source: sourceID, Device: "bathroom", Type: readingKind, SchemaVersion: "1", Attribute: "value"}})
+	handler := e.HTTP("token", map[string]HTTPSource{"humidity": {Source: sourceID, Device: "bathroom", Type: readingKind, SchemaVersion: "1", Attribute: "value", StateAttribute: "humidity"}})
 	server := httptest.NewUnstartedServer(handler)
 	server.Config.WriteTimeout = 10 * time.Second
 	server.Start()
@@ -131,7 +131,7 @@ Action("set_power", service_name=Fan, device_name=fan, value=true)
 		t.Fatalf("profile receipt %+v, %v", profile, err)
 	}
 	manual, err := client.Send(ctx, operator.Submission{Name: "test", Data: json.RawMessage(`{"operator":true}`)})
-	if err != nil || manual.Source != authorityID || manual.Type != "manual.test" {
+	if err != nil || manual.Source != chains.OperatorService || manual.Type != "manual.test" {
 		t.Fatalf("manual receipt %+v, %v", manual, err)
 	}
 	request := readMessage(t, fan.Bus, func(m chains.Message) bool { return m.Type == chains.Request })

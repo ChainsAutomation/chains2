@@ -29,6 +29,7 @@ type Snapshot struct {
 }
 
 type Change struct {
+	DeviceID  string          `json:"-"`
 	Epoch     string          `json:"epoch"`
 	Attribute string          `json:"attribute"`
 	Previous  json.RawMessage `json:"previous,omitempty"`
@@ -39,11 +40,10 @@ type Change struct {
 }
 
 type Update struct {
-	Epoch      string               `json:"epoch"`
-	Revision   uint64               `json:"revision"`
-	Address    string               `json:"address,omitempty"`
-	Attributes map[string]Attribute `json:"attributes,omitempty"`
-	Service    *chains.Service      `json:"service,omitempty"`
+	Epoch    string                          `json:"epoch"`
+	Revision uint64                          `json:"revision"`
+	Devices  map[string]map[string]Attribute `json:"devices,omitempty"`
+	Service  *chains.Service                 `json:"service,omitempty"`
 }
 
 const Updated = "state.committed"
@@ -143,13 +143,13 @@ func (v *View) apply(u Update) {
 	if u.Service != nil {
 		v.data.Services[u.Service.UUID] = *u.Service
 	}
-	if len(u.Attributes) > 0 {
-		device := v.data.Devices[u.Address]
+	for address, attributes := range u.Devices {
+		device := v.data.Devices[address]
 		if device == nil {
 			device = map[string]Attribute{}
-			v.data.Devices[u.Address] = device
+			v.data.Devices[address] = device
 		}
-		for k, a := range u.Attributes {
+		for k, a := range attributes {
 			device[k] = a
 		}
 	}
@@ -195,37 +195,52 @@ func (a *Authority) Register(m chains.Message, s chains.Service) (Update, error)
 	return u, nil
 }
 
-func (a *Authority) Report(m chains.Message, values map[string]json.RawMessage) (Update, []Change, error) {
+// Observe previews the complete update before storing any leaves.
+func (a *Authority) Observe(m chains.Message, observations []chains.Observation, preview func(Update, []Change) error) (Update, []Change, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.View.mu.Lock()
 	defer a.View.mu.Unlock()
-	address := Address(m.Source, m.DeviceID)
-	u := Update{Epoch: a.data.Epoch, Revision: a.data.Revision + 1, Address: address, Attributes: map[string]Attribute{}}
+	u := Update{Epoch: a.data.Epoch, Revision: a.data.Revision + 1, Devices: map[string]map[string]Attribute{}}
 	var changes []Change
-	names := make([]string, 0, len(values))
-	for k := range values {
-		names = append(names, k)
+	for _, observation := range observations {
+		address := Address(m.Source, observation.DeviceID)
+		attributes := map[string]Attribute{}
+		names := make([]string, 0, len(observation.Values))
+		for name := range observation.Values {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			value := observation.Values[name]
+			if !chains.Segment(name) || name == "_attributes" || !json.Valid(value) {
+				return Update{}, nil, fmt.Errorf("invalid attribute %q", name)
+			}
+			previous, exists := a.data.Devices[address][name]
+			if exists && m.ObservedAt.Before(previous.ObservedAt) {
+				if m.Silent {
+					continue
+				}
+				return Update{}, nil, nil
+			}
+			current := Attribute{Value: bytes.Clone(value), ChangedAt: previous.ChangedAt, ObservedAt: m.ObservedAt, Revision: u.Revision}
+			if !exists || !equalJSON(previous.Value, value) {
+				current.ChangedAt = m.ObservedAt
+				changes = append(changes, Change{DeviceID: observation.DeviceID, Epoch: u.Epoch, Attribute: name, Previous: previous.Value, Value: current.Value, ChangedAt: current.ChangedAt, Revision: u.Revision, Initial: !exists})
+			}
+			attributes[name] = current
+		}
+		if len(attributes) != 0 {
+			u.Devices[address] = attributes
+		}
 	}
-	sort.Strings(names)
-	for _, k := range names {
-		value := values[k]
-		if !chains.Segment(k) || k == "_attributes" || !json.Valid(value) {
-			return Update{}, nil, fmt.Errorf("invalid attribute %q", k)
-		}
-		previous, exists := a.data.Devices[address][k]
-		if exists && m.ObservedAt.Before(previous.ObservedAt) {
-			continue
-		}
-		current := Attribute{Value: bytes.Clone(value), ChangedAt: previous.ChangedAt, ObservedAt: m.ObservedAt, Revision: u.Revision}
-		if !exists || !equalJSON(previous.Value, value) {
-			current.ChangedAt = m.ObservedAt
-			changes = append(changes, Change{Epoch: u.Epoch, Attribute: k, Previous: previous.Value, Value: current.Value, ChangedAt: current.ChangedAt, Revision: u.Revision, Initial: !exists})
-		}
-		u.Attributes[k] = current
-	}
-	if len(u.Attributes) == 0 {
+	if len(u.Devices) == 0 {
 		return Update{}, nil, nil
+	}
+	if preview != nil {
+		if err := preview(u, changes); err != nil {
+			return Update{}, nil, err
+		}
 	}
 	applied, err := a.db.commit(m.Source+"/"+m.ID, u)
 	if err != nil || !applied {

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,6 +24,7 @@ type Record struct {
 	Source      string          `json:"source,omitempty"`
 	Service     string          `json:"service_id,omitempty"`
 	Device      string          `json:"device_id,omitempty"`
+	Devices     []string        `json:"device_ids,omitempty"`
 	Target      string          `json:"target,omitempty"`
 	Engine      string          `json:"engine_id,omitempty"`
 	Rule        string          `json:"rule,omitempty"`
@@ -193,8 +195,8 @@ func (f Filter) Match(r Record) bool {
 	if f.Service != "" && f.Service != r.Service && f.Service != r.Source {
 		return false
 	}
-	if f.Device != "" && f.Device != r.Device || f.Engine != "" && f.Engine != r.Engine || f.Rule != "" && f.Rule != r.Rule || f.Correlation != "" && f.Correlation != r.Correlation {
+	if f.Device != "" && f.Device != r.Device && !slices.Contains(r.Devices, f.Device) || f.Engine != "" && f.Engine != r.Engine || f.Rule != "" && f.Rule != r.Rule || f.Correlation != "" && f.Correlation != r.Correlation {
 		return false
 	}
-	return f.Search == "" || strings.Contains(strings.ToLower(strings.Join([]string{r.Type, r.Source, r.Service, r.Device, r.Engine, r.Rule, r.Summary, string(r.Data)}, " ")), strings.ToLower(f.Search))
+	return f.Search == "" || strings.Contains(strings.ToLower(strings.Join([]string{r.Type, r.Source, r.Service, r.Device, strings.Join(r.Devices, " "), r.Engine, r.Rule, r.Summary, string(r.Data)}, " ")), strings.ToLower(f.Search))
 }

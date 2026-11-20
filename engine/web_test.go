@@ -72,7 +72,7 @@ func TestWebConsole(t *testing.T) {
 		t.Fatal(err)
 	}
 	response := call(handler, "GET", path+"/services", "", "", "", cookie, 200)
-	if !strings.Contains(response.Body.String(), `"attributes":["humidity"]`) || !strings.Contains(response.Body.String(), readingKind) {
+	if !strings.Contains(response.Body.String(), `"attributes":["humidity","last_button"]`) || !strings.Contains(response.Body.String(), readingKind) {
 		t.Fatal(response.Body.String())
 	}
 	e.operator.feed.Append(operator.Record{Type: "misc"})

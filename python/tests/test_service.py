@@ -41,6 +41,10 @@ class Broker:
             if packet["type"] == kind and predicate(packet):
                 return packet
 
+    def until_observation(self, kind):
+        packet = self.until("observation.submitted", lambda p: p["data"]["event_type"] == kind)
+        return packet["data"]["observations"][0]
+
     def close(self):
         self.closed = True
 
@@ -96,12 +100,12 @@ class ServiceTest(TestCase):
             self.assertTrue(broker.until("state.reported")["silent"])
             first = broker.until("service.heartbeat")["data"]["instance_id"]
             demo.event_ping()
-            self.assertEqual(broker.until("ping")["data"], {})
+            self.assertEqual(broker.until_observation("ping")["data"], {})
             demo.event_temperature(23.0)
-            self.assertEqual(broker.until("temperature.reported")["data"], {"celsius": 23.0, "valid": True})
+            self.assertEqual(broker.until_observation("temperature.reported")["data"], {"celsius": 23.0, "valid": True})
             demo.set_state(power=True, speed=3)
-            self.assertTrue(demo.get_state("default", "power")["value"])
-            self.assertEqual(broker.until("state.reported")["data"], {"power": True, "speed": 3})
+            self.assertTrue(demo.get_state("system", "power")["value"])
+            self.assertEqual(broker.until_observation("device.observed")["values"], {"power": True, "speed": 3})
             broker.inject(message("other.event", "other", {}))
             self.assertTrue(demo.observed.wait(2))
             broker.incoming.put(Delivery(reset=True))
@@ -116,7 +120,7 @@ class ServiceTest(TestCase):
         with Demo(service_id="demo", transport=broker) as demo:
             def send_action(name, args, target="demo"):
                 request = message("action.requested", "engine", {"name": name, "args": args},
-                                  device_id="default", target=target, action_id=name, schema_version="1")
+                                  device_id="system", target=target, action_id=name, schema_version="1")
                 broker.inject(request)
                 return request
 
@@ -124,7 +128,7 @@ class ServiceTest(TestCase):
             send_action("read", {"attribute": "power"})
             reply = broker.until("action.outcome", lambda p: p["data"]["status"] == "completed")
             self.assertEqual(reply["data"]["value"], 42)
-            request = send_action("get_state", {"device_id": "default", "attribute": "power"})
+            request = send_action("get_state", {"device_id": "system", "attribute": "power"})
             reply = broker.until("action.outcome", lambda p: p["action_id"] == "get_state" and p["data"]["status"] == "completed")
             self.assertEqual(reply["causation_id"], request["id"])
             self.assertFalse(reply["data"]["value"]["value"])

@@ -84,7 +84,7 @@ Name fields in snake case. Each section and field contributes a hyphen-separated
 
 Run `chains-service --list` for bundled names, then `chains-service <name> [options]` to launch one. Custom services use `MODULE:CLASS`. Both accept the same TOML, CLI, and environment settings.
 
-To add a bundle, place its implementation in the SDK's `chains_automation.services` package and add a short-name-to-`MODULE:CLASS` entry in `BUNDLED_SERVICES`. The launcher imports the selected implementation on demand. See the [bundled service guide](services-python.md) for RFLink, Frigate, and Radicale configuration and rule examples.
+To add a bundle, place its implementation in the SDK's `chains_automation.services` package and add a short-name-to-`MODULE:CLASS` entry in `BUNDLED_SERVICES`. The launcher imports the selected implementation on demand. See the [bundled service guide](services-python.md) for RFLink, Frigate, Radicale, and Tibber Pulse configuration and rule examples.
 
 ## Lifecycle and overrides
 
@@ -93,7 +93,7 @@ To add a bundle, place its implementation in the SDK's `chains_automation.servic
 | `onInit()` | Runs before transport creation. Initialize hardware, seed state, or call `subscribe(*types)`. |
 | `onStart()` | Runs after registration and initial state synchronization. Enable push-based hardware callbacks here. |
 | `onPoll()` | Performs one poll. Runs immediately after `onStart()` on a dedicated worker, then waits the configured interval after each call. Polls never overlap. Exceptions are logged and retried on the next interval. Zero disables polling. |
-| `onEvent(event)` | Receives a decoded message for a subscribed event type. `subscribe("*")` observes public events across the namespace. Subscribe by exact type to observe internal messages such as `service.heartbeat`. Actions addressed to the service are handled separately. |
+| `onEvent(event)` | Receives a decoded message for a subscribed event type. For committed observations, read `event["observations"]` for the device patches and their payloads. `subscribe("*")` observes public events across the namespace. Subscribe by exact type to observe internal messages such as `service.heartbeat`. Actions addressed to the service are handled separately. |
 | `onReconnect()` | Runs after re-registration and silent synchronization of current state. |
 | `onShutdown()` | Runs after SDK workers stop and before the transport closes. Remove hardware callbacks and close hardware here. |
 | `describe_devices()` | Override to return device dictionaries with `id`, `name`, `class`, and `attributes`. The SDK derives each device's action list. |
@@ -103,20 +103,22 @@ Use `run(emit=None)` or a context manager when embedding a service. Each instanc
 
 ## Events, actions, and registration
 
-- `event_<name>(...)` declares an event. Call `self._send_event(*, _device=None, **fields)` inside it to publish the bound arguments and their defaults. Keyword fields override argument values and must fit the schema. `_device` selects a registered device for that message.
+- `event_<name>(...)` declares an event. Call `self._send_event(*, _device=None, _values=None, **fields)` inside it to publish the bound arguments and their defaults. Keyword fields override argument values and must fit the schema. `_device` selects a registered device. The default projection declares and updates `last_<method suffix>` with the reflected payload. Pass `_values={"attribute": value}` to project explicitly into declared attributes. A class can set `event_attributes = {"event_reading": None}` to skip automatic declaration when the method always supplies a projection.
+- `observe_batch(kind, observations, *, schema_version="1")` publishes a single revision across multiple devices. Pass a list of dictionaries with `device_id`, `values`, and optional `data`. The SDK validates the devices and declared schema. Omitted `data` uses `values` as the event payload.
+- `register_device(description)` adds a discovered device while the service is connected. Use a stable ID and register the device before emitting its first observation. Set `retain_devices = True` for dynamically discovered inventories that should remain registered across service restarts.
 - `action_<name>(...)` declares an action. The SDK validates incoming arguments, sends acceptance, invokes the method, and sends a completion with its JSON-compatible return value under `value`. An exception produces a failed outcome. Action requests are handled serially and recent duplicates reuse their stored outcome.
-- `@capability(name=None, version="1", schema=None, device=None, idempotent=False)` overrides discovery metadata. Mark an action idempotent only when retrying it is safe. Without a device override, capabilities use the device with ID `default`, or the first declared device.
+- `@capability(name=None, version="1", schema=None, device=None, idempotent=False)` overrides discovery metadata. Mark an action idempotent only when retrying it is safe. Without a device override, capabilities use the device with ID `system`, or the first declared device.
 - `describe()` returns the registration offline, including identity, devices, versioned schemas, and idempotent actions. Schemas normally come from named parameters and type hints. Supported annotations include primitives, unions, `Literal`, lists, and string-keyed dictionaries. Unannotated parameters are unconstrained. Use an explicit JSON Schema for other shapes.
-- A service with a durable publication queue can call `_prepare_event(method, data, device=..., event_id=..., cause=...)` to build a validated envelope, then publish it with `_send(envelope)`. Capture `_action_context()` inside an action to retain its causation and correlation when a background worker publishes later.
+- A service with a durable publication queue can call `_prepare_event(method, data, device=..., values=..., event_id=..., cause=...)` to build a validated envelope, then publish it with `_publish_observation(envelope)`. Capture `_action_context()` inside an action to retain its causation and correlation when a background worker publishes later.
 
 ## Reported state
 
-The default device has ID `default`. Declare its state keys in the `attributes` class tuple, or declare attributes per device in `describe_devices()`. Local state starts empty. An attribute record contains `value`, `changed_at`, and `observed_at`. Central records also carry a revision.
+The default device has ID `system`. Declare its state keys in the `attributes` class tuple, or declare attributes per device in `describe_devices()`. Local state starts empty. An attribute record contains `value`, `changed_at`, and `observed_at`. Central records also carry a revision.
 
 | API | Behavior |
 |---|---|
-| `set_state(device="default", /, **attributes)` | Updates locally and queues a live report. Central value transitions can emit `state.changed`. |
-| `seed_state(device="default", /, *, observed_at=None, **attributes)` | Updates locally and synchronizes silently. Supply a timezone-aware observation time for cached data. A stale seed cannot replace a newer central observation. |
+| `set_state(device=None, /, **attributes)` | Updates locally and queues a `device.observed` observation. Central value transitions emit `state.changed`. |
+| `seed_state(device=None, /, *, observed_at=None, **attributes)` | Updates locally and synchronizes silently. Supply a timezone-aware observation time for cached data. A stale seed cannot replace a newer central observation. |
 | `get_state(device_id=None, attribute=None)` | Returns a copy of the local service tree, device tree, or attribute record. Missing attributes return `None`. The built-in `get_state` action exposes the same lookup through its outcome's `value`. |
 | `save_state(path)` / `load_state(path)` | Optionally persist local state. Loading seeds silently and preserves timestamps. Call these explicitly where restoration and persistence fit the service. |
 | `query_state(service_id=None, device_id=None, attribute=None, *, timeout=5)` | Queries the authority, including from inside an action. Defaults to the caller's service. The reply has `found` and, when found, `state`. Whole-service replies also include `availability`. A missing reply raises `TimeoutError`. Registered services can query the shared tree. |
@@ -169,6 +171,6 @@ Run `chains-service observer:Observer`.
 
 ## Low-level SDK
 
-Use `Client(transport, source, service_type, encoding="json")` to manage the protocol lifecycle yourself. It exposes `send(message)`, `register(name, *, devices, events=None, actions=None, idempotent_actions=None)`, `event(kind, data, *, device="", schema_version="1")`, `report(device, values, *, cause=None)`, and `outcome(request, status, error="", **result)`. `serve(stop, registration, handler)` registers and dispatches actions to `handler(request, name, args)` until the stop event is set. Use `Service` for reflected return values, state, and heartbeats.
+Use `Client(transport, source, service_type, encoding="json")` to manage the protocol lifecycle yourself. It exposes `send(message)`, `register(name, *, devices, events=None, actions=None, idempotent_actions=None)`, `event(kind, data, *, device, values, schema_version="1")`, `report(device, values, *, cause=None)`, `observe_batch(kind, observations, *, schema_version="1", cause=None)`, and `outcome(request, status, error="", **result)`. `serve(stop, registration, handler)` registers and dispatches actions to `handler(request, name, args)` until the stop event is set. Use `Service` for reflected return values, state, and heartbeats.
 
 `MQTT(address, namespace="chains", types=())` and `RedisStreams(...)` implement the `Transport` protocol with `publish(topic, data)`, `receive(timeout)`, and `close()`. Receives return `Delivery(topic, data, reset, retained)` or `None` on timeout. A reset signals a subscription discontinuity. With `MQTT(..., raw_topics=(...))`, the adapter subscribes to exact upstream topics and delivers their original names. Use this mode with a separate connection from the Chains bus. Helpers `message(kind, source, data, *, observed_at=None, **fields)`, `route(message)`, `encode(message, encoding="json")`, and `decode(bytes)` build, route, and serialize envelopes.

@@ -62,14 +62,14 @@ def declare_event(kind, change):
     method = f"event_{kind}_{change}"
     if kind == "contact":
         def event(self, collection: str, uid: str, name: str):
-            self._send_event(_device=collection)
+            self._send_event(_device=collection, _values=self._last_values(kind, change, locals()))
     elif kind == "todo":
         def event(self, collection: str, uid: str, title: str | None, due: str | None, status: str | None):
-            self._send_event(_device=collection)
+            self._send_event(_device=collection, _values=self._last_values(kind, change, locals()))
     else:
         def event(self, collection: str, uid: str, title: str | None, start: str | None,
                   end: str | None, status: str | None):
-            self._send_event(_device=collection)
+            self._send_event(_device=collection, _values=self._last_values(kind, change, locals()))
     event.__name__ = method
     return capability(name=f"{EVENT_NAMES[kind]}.{change}")(event)
 
@@ -90,11 +90,11 @@ class Radicale(Service):
     @capability(name="calendar.alarm.due")
     def event_alarm(self, collection: str, uid: str, title: str | None, alarm_id: str,
                     occurrence_id: str | None, scheduled_at: str, late: bool):
-        self._send_event(_device=collection)
+        self._send_event(_device=collection, _values=self._last_values("alarm", "due", locals()))
 
     def describe_devices(self):
         return super().describe_devices() + [
-            {"id": alias, "name": alias, "class": "dav_collection", "attributes": []}
+            {"id": alias, "name": alias, "class": "dav_collection", "attributes": ["last_entry", "last_contact", "last_todo", "last_alarm"]}
             for alias in self.settings.collections
         ]
 
@@ -113,7 +113,7 @@ class Radicale(Service):
         self.dav = DAVClient(settings.radicale_url, settings.username, settings.password)
         self.urls = {}
         for alias, path in settings.collections.items():
-            if not IDENTIFIER.fullmatch(alias) or alias in {"default", ".", ".."}:
+            if not IDENTIFIER.fullmatch(alias) or alias in {"system", ".", ".."}:
                 raise ValueError("Invalid Radicale collection alias")
             if not path or urlsplit(path).netloc or urlsplit(path).scheme:
                 raise ValueError("Radicale collections require DAV paths on the configured server")
@@ -227,8 +227,15 @@ class Radicale(Service):
         self._enqueue(f"event_{kind}_{change}", alias, href, {"collection": alias, **payload},
                       cause=cause, event_id=uuid4().hex)
 
+    @staticmethod
+    def _last_values(kind, change, fields):
+        summary = {key: value for key, value in fields.items() if key not in {"self", "kind", "change"}}
+        return {"last_" + kind: {**summary, "change": change}}
+
     def _enqueue(self, method, alias, href, data, *, event_id, cause=None, expires=None):
-        envelope = self._prepare_event(method, data, device=alias, cause=cause, event_id=event_id)
+        kind, _, change = method.removeprefix("event_").partition("_")
+        values = self._last_values(kind, change or "due", data)
+        envelope = self._prepare_event(method, data, device=alias, values=values, cause=cause, event_id=event_id)
         self.db.execute("INSERT OR IGNORE INTO outbox VALUES (?,?,?,?,?)",
                         (event_id, alias, href, json.dumps(envelope), expires))
 
@@ -302,7 +309,12 @@ class Radicale(Service):
             ).fetchone()
         if pending is None:
             return False
-        self._send(json.loads(pending["envelope"]))
+        envelope = json.loads(pending["envelope"])
+        if envelope.get("type") == "observation.submitted":
+            envelope["expires_at"] = (now + timedelta(minutes=1)).isoformat()
+            self._publish_observation(envelope)
+        else:
+            log.warning("Discarding a queued event from the previous wire format")
         with self.db_lock, self.db:
             self.db.execute("DELETE FROM outbox WHERE id=?", (pending["id"],))
             if pending["expires"]:

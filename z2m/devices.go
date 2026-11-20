@@ -70,6 +70,9 @@ func mapDevice(d inventoryDevice) (device, bool) {
 	}
 	walk(d.Definition.Exposes)
 	for native, field := range result.fields {
+		if native == "action" {
+			result.Attributes = append(result.Attributes, "last_action")
+		}
 		if name, ok := readings[native]; ok && field.Access&1 != 0 {
 			result.Attributes = append(result.Attributes, name)
 		}
@@ -139,8 +142,9 @@ func (b *Bridge) translate(d device, raw []byte, retained bool) ([]chains.Messag
 	if err := json.Unmarshal(raw, &body); err != nil {
 		return nil, err
 	}
-	var messages []chains.Message
 	state := map[string]any{}
+	kind := chains.DeviceObserved
+	var data any
 	for name, value := range body {
 		field, ok := d.fields[name]
 		if !ok || field.Access&1 == 0 {
@@ -148,16 +152,11 @@ func (b *Bridge) translate(d device, raw []byte, retained bool) ([]chains.Messag
 		}
 		switch name {
 		case "action":
-			action, ok := value.(string)
-			if retained || !ok || action == "" {
-				continue
+			if action, ok := value.(string); !retained && ok && action != "" {
+				state["last_action"] = action
+				kind = ActionEvent
+				data = map[string]string{"action": action}
 			}
-			m, err := b.message(d, ActionEvent, map[string]string{"action": action})
-			if err != nil {
-				return nil, err
-			}
-			m.SchemaVersion = "1"
-			messages = append(messages, m)
 		case "state":
 			if power, ok := field.power(value); ok {
 				state["power"] = power
@@ -172,18 +171,20 @@ func (b *Bridge) translate(d device, raw []byte, retained bool) ([]chains.Messag
 			}
 		}
 	}
-	if len(state) > 0 {
-		m, err := b.message(d, chains.Report, state)
-		if err != nil {
-			return nil, err
-		}
-		for i := range messages {
-			messages[i].CausedBy(m)
-			messages[i].ObservedAt = m.ObservedAt
-		}
-		return append([]chains.Message{m}, messages...), nil
+	if len(state) == 0 {
+		return nil, nil
 	}
-	return messages, nil
+	if retained {
+		m, err := b.message(d, chains.Report, state)
+		m.Silent = true
+		return []chains.Message{m}, err
+	}
+	observation, err := chains.NewObservation(d.ID, state, data)
+	if err != nil {
+		return nil, err
+	}
+	m, err := chains.SubmitObservation(b.ID(), kind, "1", []chains.Observation{observation})
+	return []chains.Message{m}, err
 }
 
 func (b *Bridge) message(d device, kind string, data any) (chains.Message, error) {

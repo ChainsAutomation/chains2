@@ -26,7 +26,7 @@ export interface Profile {
   name: string; source: string; type: string; device_id?: string; schema_version: string; schema?: Schema; ready: boolean;
 }
 export interface Activity {
-  id?: string; time: string; type: string; source?: string; service_id?: string; device_id?: string;
+  id?: string; time: string; type: string; source?: string; service_id?: string; device_id?: string; device_ids?: string[];
   target?: string; engine_id?: string; rule?: string; run_id?: string; event_id?: string; action_id?: string;
   causation_id?: string; correlation_id?: string; summary?: string; data?: Json; truncated?: boolean;
 }

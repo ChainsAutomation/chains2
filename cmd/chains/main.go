@@ -131,7 +131,7 @@ func runEngine(ctx context.Context, c config) error {
 	if len(types) > 0 {
 		types = mergeTypes(types, []string{chains.Changed, chains.AvailabilityChanged, chains.Outcome, chains.SnapshotResponse, state.Updated, state.HeadType})
 		if c.ID == c.Authority {
-			types = mergeTypes(types, []string{chains.Registration, chains.Report, chains.SnapshotRequest, chains.StateQuery, chains.Heartbeat})
+			types = mergeTypes(types, []string{chains.Registration, chains.Report, chains.ObservationSubmitted, chains.SnapshotRequest, chains.StateQuery, chains.Heartbeat})
 			if bridge != nil {
 				types = mergeTypes(types, []string{chains.Request})
 			}
@@ -145,7 +145,7 @@ func runEngine(ctx context.Context, c config) error {
 	lifetime, cancel := context.WithCancel(ctx)
 	defer cancel()
 	e, err := engine.Open(lifetime, b, engine.Options{
-		ID: c.ID, AuthorityID: c.Authority, Database: c.Database, Rules: compiled, Calendar: cal,
+		ID: c.ID, AuthorityID: c.Authority, Database: c.Database, Rules: compiled, EventTypes: c.Types, Calendar: cal,
 		LocalService: bridge, Encoding: chains.Encoding(c.Encoding),
 		OperatorAPI: c.OperatorAPI, OperatorTrace: c.OperatorTrace,
 		OpenOperatorBus: func(ctx context.Context, sub bus.Subscription) (bus.Bus, error) {
@@ -246,13 +246,14 @@ func runSensor(ctx context.Context, c config) error {
 				slog.Warn("invalid sensor reading", "topic", d.Topic, "error", err)
 				continue
 			}
-			if err = client.Report(ctx, mapping.Device, map[string]any{mapping.Attribute: value}, nil); err != nil {
-				return err
-			}
+			values := map[string]any{mapping.Attribute: value}
 			if d.Retained {
+				if err = client.SeedState(ctx, mapping.Device, values); err != nil {
+					return err
+				}
 				continue
 			}
-			if err = client.Event(ctx, mapping.Event, mapping.Device, "1", map[string]any{mapping.Field: value}); err != nil {
+			if err = client.Event(ctx, mapping.Event, mapping.Device, "1", map[string]any{mapping.Field: value}, values); err != nil {
 				return err
 			}
 		case d, ok := <-out.Receive():
@@ -279,7 +280,7 @@ func runFan(ctx context.Context, c config) error {
 	if err = client.Register(ctx, service); err != nil {
 		return err
 	}
-	if err = client.Report(ctx, "fan", map[string]any{"power": false}, nil); err != nil {
+	if err = client.SeedState(ctx, "fan", map[string]any{"power": false}); err != nil {
 		return err
 	}
 	return client.Serve(ctx, service, func(ctx context.Context, request chains.Message, action chains.Action) error {

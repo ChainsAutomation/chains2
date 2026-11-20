@@ -104,7 +104,7 @@ func TestManagedKeyboardOnBroker(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 			defer cancel()
 			c := sdk.Config{URI: address, Namespace: "keyboard-test-" + chains.ID(), Encoding: chains.CBOR, Instance: "fixture", Authority: "engine", Name: "Fixture keyboard", ServiceID: "keyboard-fixture", HeartbeatInterval: 1}
-			observer, err := sdk.OpenTransport(ctx, c, bus.Subscription{Types: []string{chains.Registration, Event}})
+			observer, err := sdk.OpenTransport(ctx, c, bus.Subscription{Types: []string{chains.Registration, chains.ObservationSubmitted}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -128,9 +128,13 @@ func TestManagedKeyboardOnBroker(t *testing.T) {
 					case chains.Registration:
 						registered = true
 						fake.steps <- readStep{input: Input{Key: f13, Value: 1}}
-					case Event:
+					case chains.ObservationSubmitted:
+						var batch chains.ObservationBatch
+						if err := json.Unmarshal(m.Data, &batch); err != nil || batch.EventType != Event || len(batch.Observations) != 1 {
+							t.Fatalf("invalid batch %+v / %v", batch, err)
+						}
 						var value Transition
-						if err := json.Unmarshal(m.Data, &value); err != nil || !registered || value.Key != "KEY_F13" || value.Action != "press" {
+						if err := json.Unmarshal(batch.Observations[0].Values["last_key"], &value); err != nil || !registered || value.Key != "KEY_F13" || value.Action != "press" {
 							t.Fatalf("invalid keyboard event %+v / %v", value, err)
 						}
 						return

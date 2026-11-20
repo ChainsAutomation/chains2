@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-const Version = 1
+const Version = 2
 
 const (
 	Registration        = "service.registered"
@@ -27,6 +27,11 @@ const (
 )
 
 type Message struct {
+	Epoch         string          `json:"epoch,omitempty"`
+	Revision      uint64          `json:"revision,omitempty"`
+	ServiceName   string          `json:"service_name,omitempty"`
+	DeviceName    string          `json:"device_name,omitempty"`
+	Observations  []Observation   `json:"observations,omitempty"`
 	Version       int             `json:"version"`
 	ID            string          `json:"id"`
 	Type          string          `json:"type"`
@@ -55,6 +60,7 @@ type Device struct {
 }
 
 type Service struct {
+	RetainDevices     bool                                  `json:"retain_devices,omitempty"`
 	UUID              string                                `json:"uuid"`
 	Name              string                                `json:"name"`
 	ServiceType       string                                `json:"service_type"`

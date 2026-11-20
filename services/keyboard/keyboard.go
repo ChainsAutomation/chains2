@@ -105,7 +105,7 @@ func Definition(settings Settings) sdk.Definition { return definition(settings, 
 
 func definition(settings Settings, open openDevice) sdk.Definition {
 	return sdk.Definition{
-		Service: chains.Service{ServiceType: "keyboard", Devices: []chains.Device{{ID: "default", Class: "keyboard", Name: "USB keyboard"}},
+		Service: chains.Service{ServiceType: "keyboard", Devices: []chains.Device{{ID: "default", Class: "keyboard", Name: "USB keyboard", Attributes: []string{"last_key"}}},
 			Events: map[string]map[string]json.RawMessage{
 				Event: {"1": json.RawMessage(`{"type":"object","required":["action","code","key","keys","mods"],"properties":{"action":{"enum":["press","release"]},"code":{"type":"integer"},"key":{"type":"string"},"keys":{"type":"array","items":{"type":"string"}},"mods":{"type":"array","items":{"type":"string"}}},"additionalProperties":false}`)},
 			},
@@ -123,7 +123,7 @@ func definition(settings Settings, open openDevice) sdk.Definition {
 			},
 			OnStart: func(_ context.Context, r *sdk.Runtime) error {
 				r.Go(func(ctx context.Context) error {
-					run(ctx, settings, open, func(t Transition) error { return r.Event(ctx, Event, "", "1", t) })
+					run(ctx, settings, open, func(t Transition) error { return r.Event(ctx, Event, "", "1", t, map[string]any{"last_key": t}) })
 					return nil
 				})
 				return nil
