@@ -53,7 +53,7 @@ Action("writestring", service_name="LEDPanel", device_name="panel0", value=alarm
 
 ## Create and delete items
 
-Target the service's `System` device and pass a collection alias. Create actions return the collection and UID. A subsequent sync publishes the change with the action's correlation ID.
+Target the service's `System` device and pass a collection alias. Radicale advertises create and delete actions only when their corresponding collection list is configured. The schema lists permitted aliases for each operation, and Radicale checks that the item type fits the target collection. Create actions return the collection and UID. A subsequent sync publishes the change with the action's correlation ID.
 
 | Action | Arguments after `collection` |
 | --- | --- |

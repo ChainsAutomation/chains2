@@ -108,6 +108,31 @@ Action("set_power", service_name=Fan, device_name=fan, value=true)
 			t.Fatal(err)
 		}
 	}
+	eventually(t, "sensor registration", func() bool { _, ok := e.view.Service(sourceID); return ok })
+	for _, leaf := range []string{"humidity", "last_button"} {
+		if _, present := e.State("sensor/bathroom")[leaf]; present {
+			t.Fatalf("registration created a rule value for %s", leaf)
+		}
+	}
+	unreported, err := client.State(ctx, []string{sourceID, "bathroom", "last_button"})
+	if err != nil || len(unreported.Rows) != 1 || len(unreported.Rows[0].Value) != 0 ||
+		unreported.Rows[0].Changed != nil || unreported.Rows[0].Observed != nil {
+		t.Fatalf("unreported state %+v, %v", unreported, err)
+	}
+	changes := f.open(t, chains.Changed)
+	if err := sensor.Report(ctx, "bathroom", map[string]any{"last_button": nil}, nil); err != nil {
+		t.Fatal(err)
+	}
+	event := readMessage(t, changes, func(m chains.Message) bool { return m.ServiceID == sourceID && m.DeviceID == "bathroom" })
+	var first state.Change
+	if err := json.Unmarshal(event.Data, &first); err != nil || first.Attribute != "last_button" || string(first.Value) != "null" || !first.Initial {
+		t.Fatalf("expected first real null observation, got %s (%v)", event.Data, err)
+	}
+	reported, err := client.State(ctx, []string{sourceID, "bathroom", "last_button"})
+	if err != nil || len(reported.Rows) != 1 || string(reported.Rows[0].Value) != "null" ||
+		reported.Rows[0].Changed == nil || reported.Rows[0].Observed == nil {
+		t.Fatalf("reported null state %+v, %v", reported, err)
+	}
 	if err = sensor.Report(ctx, "bathroom", map[string]any{"humidity": 72.5}, nil); err != nil {
 		t.Fatal(err)
 	}

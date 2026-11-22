@@ -1,6 +1,7 @@
 from collections import OrderedDict, deque
 from contextvars import ContextVar
 from copy import deepcopy
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from functools import wraps
 from inspect import getattr_static, isfunction
@@ -162,6 +163,10 @@ class Service:
         return [{"id": DEFAULT_DEVICE, "name": "System", "classes": [],
                  "attributes": self._attribute_descriptions(deepcopy(self.attributes))}]
 
+    def describe_action_schema(self, name, version, schema):
+        """Return the configured action schema, or None to omit the action."""
+        return schema
+
     def describe(self):
         """Reflect the service registration without invoking methods or connecting."""
         caps = {"event": {}, "action": {}}
@@ -187,6 +192,12 @@ class Service:
                 "state.changed", "service.availability.changed", "action.outcome"
             }):
                 raise ValueError(f"Reserved event name {cap.name}")
+            if kind == "action":
+                schema = self.describe_action_schema(cap.name, cap.version, cap.validator.schema)
+                if schema is None:
+                    continue
+                Draft202012Validator.check_schema(schema)
+                cap = replace(cap, validator=Draft202012Validator(schema))
             schemas[kind][key] = cap.validator.schema
             caps[kind][method_name] = cap
             if kind == "action" and cap.idempotent:

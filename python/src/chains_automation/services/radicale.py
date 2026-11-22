@@ -1,4 +1,5 @@
 """Radicale synchronization, write actions, and durable event delivery."""
+from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 import json
@@ -86,6 +87,24 @@ class Radicale(Service):
     event_contact_created = declare_event("contact", "created")
     event_contact_updated = declare_event("contact", "updated")
     event_contact_deleted = declare_event("contact", "deleted")
+
+    event_attributes = {
+        f"event_{kind}_{change}": None
+        for kind in ("entry", "todo", "contact") for change in ("created", "updated", "deleted")
+    } | {"event_alarm": None}
+
+    def describe_action_schema(self, name, version, schema):
+        if name.startswith("create_"):
+            aliases = self.settings.writable_collections
+        elif name.startswith("delete_"):
+            aliases = self.settings.deletable_collections
+        else:
+            return super().describe_action_schema(name, version, schema)
+        if not aliases:
+            return None
+        configured = deepcopy(schema)
+        configured["properties"]["collection"]["enum"] = sorted(set(aliases))
+        return configured
 
     @capability(name="calendar.alarm.due")
     def event_alarm(self, collection: str, uid: str, title: str | None, alarm_id: str,

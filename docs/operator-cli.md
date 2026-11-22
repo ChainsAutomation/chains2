@@ -1,6 +1,6 @@
 # Operator CLI and TUI
 
-`chainsctl` connects to the state authority's HTTP API. It can inspect reported state, follow live activity, and publish manual events over either system bus. Build it with Go 1.23 or newer. For browser access and correlated activity timelines, see the [web console guide](operator-web.md).
+`chainsctl` connects to the state authority's HTTP API. It can inspect the State tree, describe services, follow live activity, and publish manual events over either system bus. Build it with Go 1.23 or newer. For browser access and correlated activity timelines, see the [web console guide](operator-web.md).
 
 ```sh
 CGO_ENABLED=0 go build -o chainsctl ./cmd/chainsctl
@@ -30,7 +30,18 @@ The client defaults to `http://127.0.0.1:8080`. Set `{"url":"https://chains.exam
 ./chainsctl state --output csv
 ```
 
-Use stable IDs in a path of `service[/device[/attribute]]`. The response identifies the state epoch and revision and includes service, device, and attribute rows within the selected subtree. An unmatched path returns zero rows. Attribute records include a JSON value, observation time, change time, and last state revision. The default table shows the last change time. JSON and CSV include both timestamps when available.
+Use stable IDs in a path of `service[/device[/attribute]]`. The response identifies the state epoch and revision and includes service, device, and attribute rows within the selected subtree. An unmatched path returns zero rows. State lists declared attributes even before a device reports them. The table and TUI show **Unreported**. JSON omits the reading fields for these attributes, and CSV leaves the value and timestamps empty. An explicit `null` reading has its own timestamps. Reported records also include the last state revision. The default table shows the last change time. JSON and CSV include both timestamps when available.
+
+## Describe registered services
+
+```sh
+chainsctl describe
+chainsctl describe 'Onkyo TX-NR696'
+chainsctl describe Radicale --output json
+chainsctl describe --output csv
+```
+
+The default table lists every registered service and its capability counts. An exact service name selects all matching instances. A stable service ID selects that instance. Detailed output includes devices, locations, classes, attribute schemas and setters, and versioned event and action schemas. JSON returns full registrations as an array. CSV lists one row per service, device, attribute, or capability version. The catalog includes declared capabilities before any observation arrives. Services such as the Onkyo receiver can publish the common `device.observed` event without declaring a custom event schema.
 
 ## Watch activity
 

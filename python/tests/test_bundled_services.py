@@ -88,7 +88,9 @@ class BundledServicesTest(TestCase):
         with patch("chains_automation.services.frigate.MQTT", Source):
             with Frigate("redis://localhost", service_id="frigate-fixture", transport=destination,
                          settings={"mqtt_uri": "mqtt://frigate", "topic_prefix": "home/cameras",
-                                   "topics": ["reviews", "events"]}):
+                                   "topics": ["reviews", "events"], "cameras": ["front"]}) as service:
+                initial = {d["id"]: d for d in service._registration["devices"]}
+                self.assertEqual(set(initial["front"]["attributes"]), {"last_object", "last_review"})
                 topic = "home/cameras/reviews"
                 frame = b'{"type":"new","after":{"id":"r1","camera":"front","severity":"alert","data":{"zones":["yard"]}}}'
                 source.put(Delivery(topic, frame, retained=True))

@@ -23,6 +23,7 @@ class FrigateSettings:
     topic_prefix: str = "frigate"
     topics: list[str] = field(default_factory=lambda: ["events", "reviews"])
     reconnect_interval: float = 2.0
+    cameras: list[str] = field(default_factory=list)
 
 
 def parse_update(raw):
@@ -83,12 +84,23 @@ class Frigate(ReaderService):
             return name
         return "camera:" + sha256(name.encode()).hexdigest()
 
+    @classmethod
+    def _camera_description(cls, camera):
+        return {"id": cls.camera_id(camera), "name": camera, "classes": [],
+                "attributes": {name: {"schema": {"type": "object"}}
+                               for name in ("last_object", "last_review")}}
+
+    def describe_devices(self):
+        if any(not camera.strip() for camera in self.settings.cameras):
+            raise ValueError("Frigate camera names cannot be blank")
+        return super().describe_devices() + [
+            self._camera_description(camera) for camera in dict.fromkeys(self.settings.cameras)
+        ]
+
     def _emit_camera(self, attribute, update, camera):
-        device = self.camera_id(camera)
-        self.register_device({"id": device, "name": camera, "classes": [],
-                              "attributes": {name: {"schema": {"type": "object"}}
-                                             for name in ("last_object", "last_review")}})
-        self._send_event(_device=device, _values={attribute: update})
+        description = self._camera_description(camera)
+        self.register_device(description)
+        self._send_event(_device=description["id"], _values={attribute: update})
 
     def read_source(self):
         mqtt = MQTT(self._source_uri, raw_topics=tuple(self._feeds_by_topic))

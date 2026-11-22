@@ -40,6 +40,7 @@ uri = "redis://localhost:6379"
 mqtt_uri = "mqtt://localhost:1883"
 topic_prefix = "frigate"
 topics = ["events", "reviews"]
+cameras = ["front_door"]
 reconnect_interval = 2
 ```
 
@@ -47,7 +48,7 @@ Run `chains-service frigate -f frigate.toml`. If Chains also uses MQTT on the sa
 
 `<prefix>/events` emits `frigate.object` and `<prefix>/reviews` emits `frigate.review`. Both carry `phase` (`new`, `update`, or `end`), `camera`, `native_id`, `label`, `severity`, `zones`, and the original native JSON under `payload`. Use `native_id` to correlate changes to the same object or review. Retained messages are skipped. The service bridges event metadata, and images or clips remain in Frigate.
 
-Frigate registers a logical device for each camera as live updates arrive. The authority keeps discovered cameras registered across Frigate restarts. The device stores `last_object` and `last_review` summaries with `phase`, `native_id`, `label`, `severity`, and `zones`. An `end` update remains visible as the last observation. The event payload also carries the complete native update.
+Set `cameras` (CLI `--cameras` or environment `CHAINS_SETTINGS__CAMERAS`) to register known camera names at startup. Additional cameras are registered as live updates arrive. The authority keeps discovered cameras registered across Frigate restarts. The device stores `last_object` and `last_review` summaries with `phase`, `native_id`, `label`, `severity`, and `zones`. An `end` update remains visible as the last observation. The event payload also carries the complete native update.
 
 ```text
 review = Event(type="frigate.review", phase=new, camera=front_door, severity=alert)

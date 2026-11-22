@@ -33,7 +33,7 @@ func main() {
 
 func run(ctx context.Context, args []string, in io.Reader, out, diagnostics io.Writer) error {
 	usage := func() {
-		fmt.Fprintln(diagnostics, "Usage: chainsctl {state|watch|send|tui} [options]\nSet CHAINS_OPERATOR_TOKEN and optionally CHAINS_OPERATOR_URL.")
+		fmt.Fprintln(diagnostics, "Usage: chainsctl {state|describe|watch|send|tui} [options]\nSet CHAINS_OPERATOR_TOKEN and optionally CHAINS_OPERATOR_URL.")
 	}
 	if len(args) == 0 {
 		usage()
@@ -55,7 +55,7 @@ func run(ctx context.Context, args []string, in io.Reader, out, diagnostics io.W
 	case "-h", "--help", "help":
 		usage()
 		return nil
-	case "state", "tui":
+	case "state", "describe", "tui":
 	case "watch":
 		f.IntVar(&recent, "recent", 0, "number of recent records to replay")
 		f.BoolVar(&filter.All, "all", false, "show heartbeats and state synchronization")
@@ -75,15 +75,15 @@ func run(ctx context.Context, args []string, in io.Reader, out, diagnostics io.W
 		usage()
 		return fmt.Errorf("unknown command %q", command)
 	}
-	var stateArg string
+	var selector string
 	params := args[1:]
-	if command == "state" && len(params) > 0 && !strings.HasPrefix(params[0], "-") {
-		stateArg, params = params[0], params[1:]
+	if (command == "state" || command == "describe") && len(params) > 0 && !strings.HasPrefix(params[0], "-") {
+		selector, params = params[0], params[1:]
 	}
 	if err := f.Parse(params); err != nil {
 		return err
 	}
-	if (command != "state" && f.NArg() != 0) || f.NArg() > 1 || (stateArg != "" && f.NArg() != 0) {
+	if (command != "state" && command != "describe" && f.NArg() != 0) || f.NArg() > 1 || (selector != "" && f.NArg() != 0) {
 		return errors.New("unexpected positional arguments")
 	}
 	if command != "tui" && *format != "table" && *format != "json" && *format != "csv" {
@@ -98,13 +98,22 @@ func run(ctx context.Context, args []string, in io.Reader, out, diagnostics io.W
 		return err
 	}
 	switch command {
+	case "describe":
+		if f.NArg() == 1 {
+			selector = f.Arg(0)
+		}
+		services, err := client.Services(ctx)
+		if err != nil {
+			return err
+		}
+		return printDescriptions(out, *format, selector, services)
 	case "state":
 		var path []string
 		if f.NArg() == 1 {
-			stateArg = f.Arg(0)
+			selector = f.Arg(0)
 		}
-		if stateArg != "" {
-			path = strings.Split(stateArg, "/")
+		if selector != "" {
+			path = strings.Split(selector, "/")
 		}
 		state, err := client.State(ctx, path)
 		if err != nil {
@@ -248,6 +257,13 @@ func printRows(out io.Writer, format string, header []string, rows [][]string) e
 	return w.Flush()
 }
 
+func stateValueText(r operator.StateRow) string {
+	if r.Kind == "attribute" && len(r.Value) == 0 {
+		return "Unreported"
+	}
+	return string(r.Value)
+}
+
 func printState(out io.Writer, format string, state operator.State) error {
 	if format == "json" {
 		return json.NewEncoder(out).Encode(state)
@@ -270,7 +286,7 @@ func printState(out io.Writer, format string, state operator.State) error {
 			path += "/" + r.Attribute
 			label = ""
 		}
-		rows = append(rows, []string{tableText(path, 64), tableText(label, 28), tableText(string(r.Value), 54), optionalTime(r.Changed)})
+		rows = append(rows, []string{tableText(path, 64), tableText(label, 28), tableText(stateValueText(r), 54), optionalTime(r.Changed)})
 	}
 	return printRows(out, format, []string{"PATH", "NAME", "VALUE", "CHANGED"}, rows)
 }

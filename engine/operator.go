@@ -352,11 +352,16 @@ func (e *Engine) operatorState(w http.ResponseWriter, r *http.Request) {
 			if attribute == "" {
 				result.Rows = append(result.Rows, operator.StateRow{Kind: "device", Service: id, ServiceName: service.Name, Device: d.ID, DeviceName: d.Name})
 			}
-			for name, value := range s.Devices[id+"/"+d.ID] {
-				if !hasAttribute(d, name) || attribute != "" && attribute != name {
+			observed := s.Devices[state.Address(id, d.ID)]
+			for name := range d.Attributes {
+				if attribute != "" && attribute != name {
 					continue
 				}
-				result.Rows = append(result.Rows, operator.StateRow{Kind: "attribute", Service: id, ServiceName: service.Name, Device: d.ID, DeviceName: d.Name, Attribute: name, Value: value.Value, Observed: &value.ObservedAt, Changed: &value.ChangedAt, Revision: value.Revision})
+				row := operator.StateRow{Kind: "attribute", Service: id, ServiceName: service.Name, Device: d.ID, DeviceName: d.Name, Attribute: name}
+				if value, ok := observed[name]; ok {
+					row.Value, row.Observed, row.Changed, row.Revision = value.Value, &value.ObservedAt, &value.ChangedAt, value.Revision
+				}
+				result.Rows = append(result.Rows, row)
 			}
 		}
 	}

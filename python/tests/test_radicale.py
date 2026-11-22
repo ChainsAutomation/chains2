@@ -106,6 +106,33 @@ END:VEVENT
                          ["2026-10-24T21:45:00+00:00", "2026-10-25T14:00:00+00:00"])
 
 
+@skipUnless(EXTRA, "requires the radicale extra")
+class DescriptionTest(TestCase):
+    def test_registered_actions_follow_configured_permissions(self):
+        collections = {"calendar": "local/calendar/", "people": "local/people/"}
+        reader = Radicale(service_id="reader", settings={"collections": collections})
+        read_only = reader.describe()
+        self.assertEqual(set(read_only["actions"]), {"get_state"})
+        devices = {d["id"]: d for d in read_only["devices"]}
+        self.assertEqual(devices["system"]["attributes"], {})
+        self.assertIn("last_entry", devices["calendar"]["attributes"])
+        self.assertIn("calendar.entry.created", read_only["events"])
+
+        writer = Radicale(service_id="writer", settings={
+            "collections": collections, "writable_collections": ["people", "calendar"],
+            "deletable_collections": ["calendar"],
+        })
+        writable = writer.describe()
+        self.assertEqual(writable["actions"]["create_todo"]["1"]["properties"]["collection"]["enum"],
+                         ["calendar", "people"])
+        self.assertEqual(writable["actions"]["delete_todo"]["1"]["properties"]["collection"]["enum"],
+                         ["calendar"])
+        self.assertFalse(writer._handlers["delete_todo", "1"][0].validator.is_valid(
+            {"collection": "people", "uid": "item"}))
+        self.assertIn("delete_todo", writable["devices"][0]["actions"])
+        self.assertNotIn("create_todo", writable["devices"][1]["actions"])
+
+
 @skipUnless(EXTRA and os.getenv("CHAINS_TEST_RADICALE"), "requires the radicale extra and CHAINS_TEST_RADICALE")
 class DAVIntegrationTest(TestCase):
     def setUp(self):

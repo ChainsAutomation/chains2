@@ -420,7 +420,7 @@ func (m *tui) stateRows() []operator.StateRow {
 	filter := strings.ToLower(m.filters[stateTab])
 	for _, r := range m.state.Rows {
 		if filter != "" {
-			if !strings.Contains(strings.ToLower(rowPath(r)+" "+r.ServiceName+" "+r.DeviceName+" "+string(r.Value)), filter) {
+			if !strings.Contains(strings.ToLower(rowPath(r)+" "+r.ServiceName+" "+r.DeviceName+" "+stateValueText(r)), filter) {
 				continue
 			}
 		} else if (r.Device != "" && m.collapsed[r.Service]) || (r.Attribute != "" && m.collapsed[r.Service+"/"+r.Device]) {
@@ -569,7 +569,7 @@ func (m *tui) stateView(height int) []string {
 			}
 		}
 		if r.Attribute != "" {
-			text = "    " + r.Attribute + "  " + string(r.Value)
+			text = "    " + r.Attribute + "  " + stateValueText(r)
 		}
 		text = clean(text)
 		if i == index {

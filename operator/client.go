@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	chains "chains-automation"
 )
 
 type Client struct {
@@ -102,6 +104,12 @@ func (c *Client) State(ctx context.Context, path []string) (State, error) {
 	var state State
 	err := c.json(ctx, http.MethodGet, "/state?"+query.Encode(), nil, &state)
 	return state, err
+}
+
+func (c *Client) Services(ctx context.Context) ([]chains.Service, error) {
+	services := []chains.Service{}
+	err := c.json(ctx, http.MethodGet, "/services", nil, &services)
+	return services, err
 }
 
 func (c *Client) Profiles(ctx context.Context) ([]Profile, error) {

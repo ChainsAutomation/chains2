@@ -10,6 +10,8 @@ An observation contains one patch per device. Each patch contains a `values` map
 
 The event payload is validated against the registered JSON Schema for the event type and schema version. The State patch is checked against the device's declared attribute names and schemas. Attributes can hold JSON values, including objects, lists, and explicit `null`. A patch leaves omitted attributes and their timestamps intact. The reserved name `_attributes` exposes metadata through the DSL.
 
+Registration defines the attribute paths that appear in operator State. A declared leaf without an observation is **Unreported**. Registration does not generate an observation or timestamps. Rules reading State still see actual values only. [Operator State and describe](operator-cli.md#inspect-state)
+
 ## Submitting an observation
 
 A single-device submission uses the same envelope as a batch. A humidity sensor can submit one patch with `device_id: "bathroom-sensor"`, `values: {"humidity": 72.5}`, and `data: {"value": 72.5}`. The event payload uses the sensor's published schema and the State path uses the registered attribute name.

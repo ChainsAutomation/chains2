@@ -31,13 +31,7 @@ export function StateView(props: { services: Service[]; load: (signal: AbortSign
   const deviceRecord = createMemo(() => serviceRecord()?.devices?.find(item => item.id === device()));
   const key = (row: StateRow) => [row.service_id, row.device_id, row.attribute].join("/");
   const rows = createMemo(() => {
-    const result = new Map<string, StateRow>();
-    for (const row of snapshot()?.rows ?? []) if (row.kind === "attribute") result.set(key(row), row);
-    for (const svc of props.services) for (const dev of svc.devices ?? []) for (const attr of Object.keys(dev.attributes ?? {})) {
-      const row = { kind: "attribute", service_id: svc.uuid, service_name: svc.name, device_id: dev.id, device_name: dev.name, attribute: attr };
-      if (!result.has(key(row))) result.set(key(row), row);
-    }
-    return [...result.values()].filter(row =>
+    return (snapshot()?.rows ?? []).filter(row => row.kind === "attribute").filter(row =>
       (!service() || row.service_id === service()) && (!device() || row.device_id === device()) &&
       (!attribute() || row.attribute === attribute()) &&
       [key(row), row.service_name, row.device_name, jsonText(row.value, false)].join(" ").toLowerCase().includes(search().toLowerCase().trim()),
