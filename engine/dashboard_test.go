@@ -73,7 +73,7 @@ func TestDashboardRolesAndPersistence(t *testing.T) {
 	}
 	op, family := login("operator"), login("family")
 	call("GET", base+"/dashboard", "", "", nil, 401)
-	call("GET", base+"/dashboard/config", "", "", family, 403)
+	call("GET", base+"/dashboard/config", "", "", family, 200)
 	call("GET", "/operator/v1/activity", "", "", family, 404)
 	call("GET", "/operator/v1/state", "", "", family, 404)
 	call("POST", "/operator/v1/actions", origin, "{}", family, 404)
@@ -90,9 +90,9 @@ func TestDashboardRolesAndPersistence(t *testing.T) {
 	}
 
 	config := `{"version":1,"revision":0,"home_id":"home","dashboards":[{"id":"home","name":"Home","pinned":true,"blocks":[]}]}`
-	call("PUT", base+"/dashboard/config", origin, config, family, 403)
+	call("PUT", base+"/dashboard/config", origin, config, family, 200)
 	call("PUT", base+"/dashboard/config", "https://elsewhere.example", config, op, 403)
-	call("PUT", base+"/dashboard/config", origin, config, op, 200)
+	call("POST", base+"/dashboard/preview", origin, `{"dashboard":{"id":"home","name":"Home","blocks":[]}}`, family, 200)
 	call("PUT", base+"/dashboard/config", origin, config, op, 409)
 	authority.Close()
 	authority, err = state.Open(path)

@@ -12,7 +12,7 @@ export default defineConfig({
         if (request.method === "GET" && request.url) {
           const url = new URL(request.url, "http://localhost");
           if (/^\/ui(?:\/(?:state|devices|watch|send|rules|trace)?)?$/.test(url.pathname)) request.url = "/ui/index.html" + url.search;
-          else if (/^\/(?:devices|admin|dashboards\/[^/]+)?$/.test(url.pathname)) request.url = "/index.html" + url.search;
+          else if (/^\/(?:devices|(?:dashboards|dashboard-editor)(?:\/[^/]+)?)?$/.test(url.pathname)) request.url = "/index.html" + url.search;
         }
         next();
       });

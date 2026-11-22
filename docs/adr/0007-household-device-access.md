@@ -1,6 +1,6 @@
 # ADR 0007 — Household access to registered devices
 
-**Status** Accepted
+**Status** Accepted. The dashboard editing permission is superseded by [ADR 0008](0008-household-dashboard-editing.md).
 
 ## Context
 

@@ -1,7 +1,7 @@
 import { createMemo, createSignal, For, Match, Show, Switch } from "solid-js";
 import type { JSX } from "@solidjs/web";
 import { attributeLabel, type DeviceEntry, type Json, type SetRequest } from "./api";
-import { Button, Empty, Heading, jsonText } from "./components";
+import { Button, Empty, Heading, jsonText, type Navigate } from "./components";
 import { Argument } from "./argument";
 
 export type API = <T>(path: string, init?: RequestInit) => Promise<T>;
@@ -129,14 +129,43 @@ export function DashboardGrid(props: { layout: Layout; devices: DeviceEntry[]; a
   </div>;
 }
 
-export function DashboardView(props: { id: string; home?: Home; actions: CardActions; operator: boolean }) {
+export function DashboardCollection(props: { home?: Home; navigate: Navigate }) {
+  return <>
+    <Heading title="Dashboards"><Button primary onClick={() => props.navigate("dashboard-editor")}>New dashboard</Button></Heading>
+    <Show when={props.home} fallback={<Empty title="Loading dashboards…" />}>{snapshot =>
+      <Show when={snapshot().dashboards.length} fallback={<Empty title="No dashboards yet" />}>
+        <div class="dashboard-list">
+          <For each={snapshot().dashboards.map(d => d.id)}>{id => {
+            const board = () => snapshot().dashboards.find(d => d.id === id)!;
+            return <article class="panel dashboard-list-item">
+              <h2><a href={"/dashboards/" + id}>{board().name}</a></h2>
+              <div class="toolbar">
+                <Show when={snapshot().home_id === id}><small>Home</small></Show>
+                <Show when={board().pinned}><small>Pinned</small></Show>
+                <Button aria-label={"Edit " + board().name} onClick={() => props.navigate("dashboard-editor/" + id)}>Edit</Button>
+              </div>
+            </article>;
+          }}</For>
+        </div>
+      </Show>
+    }</Show>
+  </>;
+}
+
+export function DashboardView(props: { id: string; home?: Home; actions: CardActions; navigate: Navigate }) {
   const board = () => props.home?.dashboards.find(b => b.id === (props.id || props.home?.home_id));
   return <Show when={props.home} fallback={<Empty title="Loading dashboards…" />}>
-    <Show when={board()} fallback={<Empty title={props.id ? "Dashboard unavailable" : "Home"}>
-      <div class="toolbar"><a class="button" href="/devices">Browse devices</a>
-        <Show when={props.operator}><a class="button" href="/admin">Open dashboard builder</a></Show></div>
-    </Empty>}>
-      {layout => <><Heading title={layout().name} /><Show when={layout().blocks.some(b => b.devices.length || b.kind === "separator")} fallback={<Empty title="No cards yet" />}>
+    <Show when={board()} fallback={props.id ? <Empty title="Dashboard unavailable"><Button onClick={() => props.navigate("dashboards")}>Open dashboards</Button></Empty> :
+      <><Heading title="Home" />
+      <section class="panel dashboard-start">
+        <h2>Choose what appears on Home</h2>
+        <p>Add device cards and groups to a dashboard you can open here.</p>
+        <div class="toolbar"><Button primary onClick={() => props.navigate("dashboard-editor")}>Create dashboard</Button>
+          <Button onClick={() => props.navigate("devices")}>Browse devices</Button></div>
+      </section></>}>
+      {layout => <><Heading title={layout().name}>
+        <Button onClick={() => props.navigate("dashboard-editor/" + layout().id)}>Edit dashboard</Button>
+      </Heading><Show when={layout().blocks.some(b => b.devices.length || b.kind === "separator")} fallback={<Empty title="No cards yet" />}>
         <DashboardGrid layout={layout()} devices={props.home?.devices ?? []} actions={props.actions} />
       </Show></>}
     </Show>

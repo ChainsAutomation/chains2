@@ -194,16 +194,12 @@ func dashboardBody(w http.ResponseWriter, r *http.Request, target any) bool {
 
 func (e *Engine) dashboardRoutes(mux *http.ServeMux, sessions *browserSessions, loopbackProxy bool) {
 	const base = householdBase + "/dashboard"
-	handle := func(pattern string, operatorOnly bool, next http.HandlerFunc) {
+	handle := func(pattern string, next http.HandlerFunc) {
 		mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Cache-Control", "no-store")
 			session, ok := sessions.lookup(r)
 			if !ok {
 				http.Error(w, "unauthorized", 401)
-				return
-			}
-			if operatorOnly && session.role != "operator" {
-				http.Error(w, "operator access required", 403)
 				return
 			}
 			if r.Method != http.MethodGet {
@@ -234,7 +230,7 @@ func (e *Engine) dashboardRoutes(mux *http.ServeMux, sessions *browserSessions, 
 		http.Error(w, "dashboard catalog unavailable", 500)
 		return dashboardCatalog{}, false
 	}
-	handle("GET "+base, false, func(w http.ResponseWriter, _ *http.Request) {
+	handle("GET "+base, func(w http.ResponseWriter, _ *http.Request) {
 		c, ok := catalog(w)
 		if !ok {
 			return
@@ -251,12 +247,12 @@ func (e *Engine) dashboardRoutes(mux *http.ServeMux, sessions *browserSessions, 
 			Dashboards []dashboardLayout `json:"dashboards"`
 		}{c.Home, devices, layouts})
 	})
-	handle("GET "+base+"/config", true, func(w http.ResponseWriter, _ *http.Request) {
+	handle("GET "+base+"/config", func(w http.ResponseWriter, _ *http.Request) {
 		if c, ok := catalog(w); ok {
 			writeJSON(w, 200, c)
 		}
 	})
-	handle("PUT "+base+"/config", true, func(w http.ResponseWriter, r *http.Request) {
+	handle("PUT "+base+"/config", func(w http.ResponseWriter, r *http.Request) {
 		var c dashboardCatalog
 		if !dashboardBody(w, r, &c) {
 			return
@@ -294,7 +290,7 @@ func (e *Engine) dashboardRoutes(mux *http.ServeMux, sessions *browserSessions, 
 		}
 		writeJSON(w, 200, c)
 	})
-	handle("POST "+base+"/preview", true, func(w http.ResponseWriter, r *http.Request) {
+	handle("POST "+base+"/preview", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Board dashboard `json:"dashboard"`
 		}
@@ -307,7 +303,7 @@ func (e *Engine) dashboardRoutes(mux *http.ServeMux, sessions *browserSessions, 
 		}
 		writeJSON(w, 200, resolveDashboard(req.Board, dashboardDevices(e.view.Snapshot())))
 	})
-	handle("POST "+householdBase+"/actions", false, e.dashboardAction)
+	handle("POST "+householdBase+"/actions", e.dashboardAction)
 }
 
 func (e *Engine) dashboardAction(w http.ResponseWriter, r *http.Request) {

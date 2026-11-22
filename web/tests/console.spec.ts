@@ -240,49 +240,55 @@ test("Devices groups across services and edits placement without changing contro
   await expect(sensor).toBeVisible();
 });
 
-test("household can browse and control registered devices", async ({ page, browser }) => {
-  await page.goto("/admin");
-  await page.getByLabel("Access token").fill(token);
+test("household token creates, opens and edits a dashboard from Home", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/");
+  await page.getByLabel("Access token").fill("web-fixture-household");
   await page.getByRole("button", { name: "Sign in" }).click();
-  const independent = await page.request.get("/operator/v1/session");
-  expect(independent.status()).toBe(401);
-
-  await page.getByRole("button", { name: "New dashboard" }).click();
+  await page.getByRole("button", { name: "Create dashboard", exact: true }).click();
+  await expect(page.getByLabel("Use as home")).toBeChecked();
   await page.getByLabel("Dashboard name").fill("Household test");
-  await page.getByLabel("Use as home").check();
-  await page.getByLabel("Pin in navigation").check();
+
+  await page.getByRole("button", { name: "Add device", exact: true }).click();
+  await page.getByLabel("Search devices").fill("bathroom-sensor");
+  await page.getByRole("combobox", { name: "Device", exact: true }).selectOption("humidity-sensor/bathroom-sensor");
+  await page.getByRole("button", { name: "Add to dashboard" }).click();
   await page.getByRole("button", { name: "Add separator" }).click();
   await page.getByLabel("Heading (optional)").fill("Controls");
   await page.getByRole("button", { name: "Add live group" }).click();
   await page.getByLabel("Device class").fill("toggle");
-  await page.getByRole("button", { name: "Preview dashboard" }).click();
-  await expect(page.getByRole("article", { name: "Bathroom fan" })).toBeVisible();
-  await expect(page.getByRole("switch")).toHaveCount(0);
-  await page.getByRole("button", { name: "Save dashboards" }).click();
+  const preview = page.getByRole("region", { name: "Live preview" });
+  await expect(preview.getByRole("article", { name: "Bathroom fan", exact: true })).toBeVisible();
+  await expect(preview.getByRole("article", { name: "bathroom-sensor", exact: true })).toBeVisible();
+  await expect(preview.getByRole("switch")).toHaveCount(0);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+
+  await page.getByRole("button", { name: "Save dashboard", exact: true }).click();
+  await expect(page).toHaveURL(/\/dashboards\/[0-9a-f-]+$/);
+  await expect(page.getByRole("heading", { name: "Household test" })).toBeVisible();
+  expect((await page.request.get("/operator/v1/rules")).status()).toBe(401);
+  const toggle = page.getByRole("article", { name: "Bathroom fan", exact: true }).getByRole("switch", { name: "power", exact: true });
+  const before = await toggle.getAttribute("aria-checked");
+  await toggle.focus();
+  await page.keyboard.press("Space");
+  await expect(toggle).toHaveAttribute("aria-checked", before === "true" ? "false" : "true");
+
+  await page.getByRole("link", { name: "Home", exact: true }).click();
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "Household test" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Controls" })).toBeVisible();
+  const nav = page.getByRole("navigation", { name: "Main navigation" });
+  await expect(nav.getByRole("link", { name: "Household test" })).toHaveCount(0);
+  await nav.getByRole("link", { name: "Dashboards", exact: true }).click();
   await expect(page.getByRole("link", { name: "Household test" })).toBeVisible();
-
-  const household = await browser.newPage({ viewport: { width: 390, height: 844 } });
-  try {
-    await household.goto(new URL("/", page.url()).href);
-    await household.getByLabel("Access token").fill("web-fixture-household");
-    await household.getByRole("button", { name: "Sign in" }).click();
-    await expect(household.getByRole("heading", { name: "Household test" })).toBeVisible();
-    await expect(household.getByRole("heading", { name: "Controls" })).toBeVisible();
-    await expect(household.getByRole("link", { name: "Admin" })).toHaveCount(0);
-    expect((await household.request.get("/operator/v1/rules")).status()).toBe(401);
-    const toggle = household.getByRole("article", { name: "Bathroom fan", exact: true }).getByRole("switch", { name: "power", exact: true });
-    const before = await toggle.getAttribute("aria-checked");
-    await toggle.focus();
-    await household.keyboard.press("Space");
-    await expect(toggle).toHaveAttribute("aria-checked", before === "true" ? "false" : "true");
-    expect(await household.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
-
-    await household.getByRole("link", { name: "All Devices" }).click();
-    await expect(household.getByRole("article", { name: "bathroom-sensor", exact: true })).toBeVisible();
-    await household.getByRole("link", { name: "Home", exact: true }).click();
-    await household.reload();
-    await expect(household.getByRole("heading", { name: "Household test" })).toBeVisible();
-  } finally { await household.close(); }
+  await page.getByRole("button", { name: "Edit Household test" }).click();
+  await page.reload();
+  await page.getByLabel("Dashboard name").fill("Household edited");
+  await page.getByLabel("Pin in navigation").check();
+  await page.getByRole("button", { name: "Save dashboard", exact: true }).click();
+  await expect(nav.getByRole("link", { name: "Household edited" })).toBeVisible();
+  await nav.getByRole("link", { name: "All Devices" }).click();
+  await expect(page.getByRole("article", { name: "bathroom-sensor", exact: true })).toBeVisible();
 });
 
 test("receiver cards identify the service and show AV controls across locations", async ({ page }) => {

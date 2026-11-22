@@ -49,7 +49,7 @@ func TestWebConsole(t *testing.T) {
 		}
 		return recorder
 	}
-	for path, marker := range map[string]string{"/": "Chains Household", "/devices": "Chains Household", "/dashboards/main": "Chains Household", "/admin": "Chains Household", "/ui/": "Chains Operator", "/ui/state": "Chains Operator"} {
+	for path, marker := range map[string]string{"/": "Chains Household", "/devices": "Chains Household", "/dashboards/main": "Chains Household", "/dashboards": "Chains Household", "/dashboard-editor": "Chains Household", "/dashboard-editor/main": "Chains Household", "/ui/": "Chains Operator", "/ui/state": "Chains Operator"} {
 		if got := call(handler, "GET", path, "", "", "", nil, 200).Body.String(); got != marker {
 			t.Fatalf("%s returned %q, want %q", path, got, marker)
 		}

@@ -135,7 +135,7 @@ func (e *Engine) WebHTTP(token string, mappings map[string]HTTPSource, assets fs
 		sessions := browserSessions{cookie: "chains_household", sessions: map[string]browserSession{}}
 		sessions.routes(mux, householdBase, token, options.HouseholdToken, options.LoopbackProxy)
 		e.dashboardRoutes(mux, &sessions, options.LoopbackProxy)
-		webPages(mux, assets, "index.html", "/{$}", "/devices", "/dashboards/{id}", "/admin")
+		webPages(mux, assets, "index.html", "/{$}", "/devices", "/dashboards", "/dashboards/{id}", "/dashboard-editor", "/dashboard-editor/{id}")
 	}
 	mux.Handle("GET /assets/", http.FileServerFS(assets))
 	mux.Handle("/", api)
