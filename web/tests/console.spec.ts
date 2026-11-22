@@ -266,7 +266,7 @@ test("household can browse and control registered devices", async ({ page, brows
     await expect(household.getByRole("heading", { name: "Controls" })).toBeVisible();
     await expect(household.getByRole("link", { name: "Admin" })).toHaveCount(0);
     expect((await household.request.get("/operator/v1/rules")).status()).toBe(401);
-    const toggle = household.getByRole("switch", { name: "power" });
+    const toggle = household.getByRole("article", { name: "Bathroom fan", exact: true }).getByRole("switch", { name: "power", exact: true });
     const before = await toggle.getAttribute("aria-checked");
     await toggle.focus();
     await household.keyboard.press("Space");
