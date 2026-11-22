@@ -1,13 +1,15 @@
 import { createEffect, createSignal, For, onCleanup, Show, Switch, Match } from "solid-js";
 import { render } from "@solidjs/web";
-import { type Activity, type Connection, HISTORY, HTTPError, jsonBody, type Profile, query, type Service, type Snapshot, type Trace, request, watch } from "./api";
+import { type Activity, type Connection, HISTORY, HTTPError, jsonBody, type Profile, query, type Service, type SetReceipt, type Snapshot, type Trace, request, watch } from "./api";
 import { TraceView, WatchView } from "./activity";
 import { Button, type Navigate } from "./components";
 import { SendView, type Draft } from "./send";
+import { RulesView } from "./rules";
+import { DevicesView } from "./devices";
 import { StateView } from "./state";
 import "./styles.css";
 
-const pages = [["State", "state", "▦"], ["Watch", "watch", "≋"], ["Send", "send", "＋"], ["Trace Explorer", "trace", "⑂"]] as const;
+const pages = [["State", "state", "▦"], ["Devices", "devices", "⌂"], ["Watch", "watch", "≋"], ["Send", "send", "＋"], ["Rules", "rules", "≡"], ["Trace Explorer", "trace", "⑂"]] as const;
 const pageURL = () => new URL(window.location.href);
 const pageName = (url: URL) => url.pathname.replace(/^\/ui\/?/, "").replace(/\/$/, "") || "state";
 function App() {
@@ -37,11 +39,13 @@ function App() {
     window.scrollTo(0, 0);
   };
   const page = () => pageName(location());
+  const [rulesVisited, setRulesVisited] = createSignal(false);
+  createEffect(() => page() === "rules" && auth() === "signed-in", visited => { if (visited) setRulesVisited(true); });
   function stopWork() {
     stream?.abort(); catalogRequest?.abort(); clearTimeout(catalogTimer);
   }
   function signedOut() {
-    stopWork(); setAuth("signed-out"); setConnection("Disconnected");
+    stopWork(); setRulesVisited(false); setAuth("signed-out"); setConnection("Disconnected");
     setRecords([]); setServices([]); setProfiles([]); setDrafts({}); setProfile(""); setCatalogError("");
   }
   async function api<T>(path: string, init?: RequestInit) {
@@ -75,7 +79,7 @@ function App() {
       });
       return [...previous, ...arrived].slice(-HISTORY);
     });
-    if (batch.some(r => r.type === "service.registered" || r.type === "watch.gap")) {
+    if (batch.some(r => r.type === "service.registered" || r.type === "device.placement.changed" || r.type === "watch.gap")) {
       clearTimeout(catalogTimer);
       catalogTimer = window.setTimeout(reloadCatalog, 250);
     }
@@ -130,8 +134,11 @@ function App() {
       </aside>
       <main id="content">
         <Show when={catalogError()}><div class="notice" role="alert">{catalogError()} <button class="quiet" onClick={() => void reloadCatalog()}>Retry</button></div></Show>
+        <Show when={rulesVisited()}><div hidden={page() !== "rules"}><RulesView services={services()} api={api} /></div></Show>
         <Switch fallback={<div class="panel empty">Page unavailable. <Button onClick={() => navigate("state")}>Open State</Button></div>}>
-          <Match when={page() === "state"}><StateView services={services()} load={signal => api<Snapshot>("/state", { signal })} refreshCatalog={reloadCatalog} /></Match>
+          <Match when={page() === "rules"}>{null}</Match>
+          <Match when={page() === "devices"}><DevicesView api={api} services={services()} refreshCatalog={() => void reloadCatalog()} /></Match>
+          <Match when={page() === "state"}><StateView services={services()} load={signal => api<Snapshot>("/state", { signal })} refreshCatalog={reloadCatalog} setAttribute={data => api<SetReceipt>("/actions", jsonBody("POST", data))} /></Match>
           <Match when={page() === "watch"}><WatchView services={services()} records={records()} status={connection()} navigate={navigate} /></Match>
           <Match when={page() === "send"}><SendView services={services()} profiles={profiles()} drafts={drafts()} initialProfile={profile()} selectProfile={setProfile} navigate={navigate}
             loadState={() => api<Snapshot>("/state")} submit={data => api("/events", jsonBody("POST", data))}

@@ -12,9 +12,17 @@ export interface Schema {
   default?: Json;
   [keyword: string]: unknown;
 }
-export interface Device { id: string; name: string; class: string; attributes?: string[]; actions?: string[] }
+export interface Attribute { schema: Schema; label?: string; description?: string; unit?: string;
+  setter?: { action: string; schema_version: string; argument: string; label?: string } }
+export const attributeLabel = (id: string, attr?: Attribute) => attr?.label || id.replaceAll("_", " ");
+export interface Device { id: string; name: string; classes: string[]; location?: string[]; tags?: string[]; description?: string; attributes?: Record<string, Attribute>; actions?: string[] }
+export type Reading = { value: Json; observed_at: string; changed_at: string; revision: number };
+export type DeviceEntry = { service_id: string; service_name: string; device: Device; state: Record<string, Reading> };
+export type DeviceList = { revision: number; devices: DeviceEntry[] };
+export type SetRequest = { service_id: string; device_id: string; attribute: string; value: Json };
+export type SetReceipt = { action_id: string; correlation_id: string; status: "sent" };
 export interface Service {
-  uuid: string; name: string; service_type: string; devices?: Device[];
+  uuid: string; name: string; description?: string; service_type: string; devices?: Device[];
   events?: Record<string, Record<string, Schema>>; actions?: Record<string, Record<string, Schema>>;
 }
 export interface StateRow {

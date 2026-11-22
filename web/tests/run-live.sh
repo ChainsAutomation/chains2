@@ -39,7 +39,7 @@ for ((i=0; i<50; i++)); do
   if mosquitto_pub -p "$mqtt_port" -t web-test/ready -m 1 2>/dev/null; then break; fi
   sleep .1
 done
-"$temp_dir/chains" engine -config "$temp_dir/engine.json" -database :memory: -rules "$temp_dir/manual.chains" \
+"$temp_dir/chains" engine -config "$temp_dir/engine.json" -database :memory: -web-rules-dir "$temp_dir/web-rules" -rules "$temp_dir/manual.chains" \
   -listen "127.0.0.1:$web_port" -operator-api -operator-trace -operator-web > "$temp_dir/engine.log" 2>&1 &
 pids+=($!)
 for ((i=0; i<50; i++)); do

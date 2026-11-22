@@ -1,1 +1,1 @@
-{"version":2,"id":"sensor-reading-1","type":"humidity.reported","source":"sensor","service_type":"mqtt_sensor","device_id":"bathroom-sensor","schema_version":"1","observed_at":"2026-01-01T12:00:00Z","data":{"value":72.5,"healthy":true,"unit":"%"}}
+{"version":3,"id":"sensor-reading-1","type":"humidity.reported","source":"sensor","service_type":"mqtt_sensor","device_id":"bathroom-sensor","schema_version":"1","observed_at":"2026-01-01T12:00:00Z","data":{"value":72.5,"healthy":true,"unit":"%"}}

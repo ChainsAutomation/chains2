@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from icalendar import Alarm, Calendar, Event as CalendarEntry, Todo
 import vobject
 
-from ..client import IDENTIFIER
+from ..client import VERSION, IDENTIFIER
 from ..description import capability
 from ..service import Service, utcnow
 from ..service_config import xdg
@@ -94,7 +94,8 @@ class Radicale(Service):
 
     def describe_devices(self):
         return super().describe_devices() + [
-            {"id": alias, "name": alias, "class": "dav_collection", "attributes": ["last_entry", "last_contact", "last_todo", "last_alarm"]}
+            {"id": alias, "name": alias, "classes": [], "attributes": {name: {"schema": {"type": "object"}}
+                            for name in ("last_entry", "last_contact", "last_todo", "last_alarm")}}
             for alias in self.settings.collections
         ]
 
@@ -310,7 +311,7 @@ class Radicale(Service):
         if pending is None:
             return False
         envelope = json.loads(pending["envelope"])
-        if envelope.get("type") == "observation.submitted":
+        if envelope.get("version") == VERSION and envelope.get("type") == "observation.submitted":
             envelope["expires_at"] = (now + timedelta(minutes=1)).isoformat()
             self._publish_observation(envelope)
         else:

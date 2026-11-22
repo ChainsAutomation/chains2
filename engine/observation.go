@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -33,10 +34,8 @@ func (e *Engine) validateObservation(m chains.Message, batch *chains.Observation
 			return s, fmt.Errorf("unknown, duplicate or empty observation device %q", o.DeviceID)
 		}
 		devices[o.DeviceID] = true
-		for name := range o.Values {
-			if !contains(d.Attributes, name) {
-				return s, fmt.Errorf("unknown attribute %q", name)
-			}
+		if err := e.validateAttributes(d, o.Values); err != nil {
+			return s, err
 		}
 		if len(o.Data) == 0 {
 			o.Data, _ = json.Marshal(o.Values)
@@ -51,7 +50,7 @@ func (e *Engine) validateObservation(m chains.Message, batch *chains.Observation
 				return s, err
 			}
 		}
-		o.DeviceName, o.DeviceClass = d.Name, d.Class
+		o.DeviceName, o.DeviceClasses, o.Placement = d.Name, d.Classes, d.Placement
 	}
 	return s, nil
 }
@@ -100,10 +99,11 @@ func (e *Engine) commitObservation(ctx context.Context, m chains.Message, servic
 			event.ID = observationID(m)
 			event.Type, event.Source = batch.EventType, e.node.Source
 			event.ServiceID, event.ServiceName, event.ServiceType = service.UUID, service.Name, service.ServiceType
-			event.DeviceID, event.DeviceName, event.DeviceClass = "", "", ""
+			event.DeviceID, event.DeviceName, event.DeviceClasses = "", "", nil
+			event.Placement = chains.Placement{}
 			if len(batch.Observations) == 1 {
 				o := batch.Observations[0]
-				event.DeviceID, event.DeviceName, event.DeviceClass = o.DeviceID, o.DeviceName, o.DeviceClass
+				event.DeviceID, event.DeviceName, event.DeviceClasses, event.Placement = o.DeviceID, o.DeviceName, o.DeviceClasses, o.Placement
 			}
 			event.Epoch, event.Revision = u.Epoch, u.Revision
 			event.Observations = batch.Observations
@@ -123,7 +123,7 @@ func (e *Engine) commitObservation(ctx context.Context, m chains.Message, servic
 				}
 				d, _ := device(service, change.DeviceID)
 				leaf.ServiceID, leaf.ServiceName, leaf.ServiceType = service.UUID, service.Name, service.ServiceType
-				leaf.DeviceID, leaf.DeviceName, leaf.DeviceClass = d.ID, d.Name, d.Class
+				leaf.DeviceID, leaf.DeviceName, leaf.DeviceClasses, leaf.Placement = d.ID, d.Name, d.Classes, d.Placement
 				leaf.Epoch, leaf.Revision = u.Epoch, u.Revision
 				leaf.ObservedAt, leaf.ExpiresAt, leaf.ActionID = m.ObservedAt, event.ExpiresAt, m.ActionID
 				leaf.CausedBy(event)
@@ -185,7 +185,7 @@ func (e *Engine) registerOperator() error {
 		return nil
 	}
 	service := chains.Service{UUID: chains.OperatorService, Name: "Operator", ServiceType: "operator", Devices: []chains.Device{
-		{ID: "system", Name: "System", Class: "system", Attributes: []string{"last_manual_event"}},
+		{ID: "system", Name: "System", Classes: []string{}, Attributes: chains.Attributes("last_manual_event")},
 	}}
 	m, err := chains.New(chains.Registration, service.UUID, service)
 	if err != nil {
@@ -211,7 +211,7 @@ func (e *Engine) makeObservation(source, kind, version, device, attribute string
 	return m, err
 }
 
-func (e *Engine) ResolveDevices(selectors map[string]string) []rules.DeviceRef {
+func (e *Engine) ResolveDevices(selectors map[string]string, placement chains.PlacementFilter) []rules.DeviceRef {
 	var result []rules.DeviceRef
 	for _, service := range e.view.Services() {
 		if id := selectors["service_id"]; id != "" && id != service.UUID {
@@ -221,6 +221,12 @@ func (e *Engine) ResolveDevices(selectors map[string]string) []rules.DeviceRef {
 			continue
 		}
 		for _, device := range service.Devices {
+			if !placement.Match(device.Placement) {
+				continue
+			}
+			if class := selectors["device_class"]; class != "" && !slices.Contains(device.Classes, class) {
+				continue
+			}
 			if id := selectors["device_id"]; id != "" && id != device.ID {
 				continue
 			}

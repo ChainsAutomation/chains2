@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-const Version = 2
+const Version = 3
 
 const (
 	Registration        = "service.registered"
@@ -27,6 +27,7 @@ const (
 )
 
 type Message struct {
+	Placement
 	Epoch         string          `json:"epoch,omitempty"`
 	Revision      uint64          `json:"revision,omitempty"`
 	ServiceName   string          `json:"service_name,omitempty"`
@@ -39,7 +40,7 @@ type Message struct {
 	ServiceID     string          `json:"service_id,omitempty"`
 	ServiceType   string          `json:"service_type,omitempty"`
 	DeviceID      string          `json:"device_id,omitempty"`
-	DeviceClass   string          `json:"device_class,omitempty"`
+	DeviceClasses []string        `json:"device_classes,omitempty"`
 	Target        string          `json:"target,omitempty"`
 	SchemaVersion string          `json:"schema_version,omitempty"`
 	ObservedAt    time.Time       `json:"observed_at"`
@@ -52,14 +53,17 @@ type Message struct {
 }
 
 type Device struct {
-	ID         string   `json:"id"`
-	Name       string   `json:"name"`
-	Class      string   `json:"class"`
-	Attributes []string `json:"attributes,omitempty"`
-	Actions    []string `json:"actions,omitempty"`
+	Placement
+	ID          string               `json:"id"`
+	Name        string               `json:"name"`
+	Classes     []string             `json:"classes"`
+	Description string               `json:"description,omitempty"`
+	Attributes  map[string]Attribute `json:"attributes,omitempty"`
+	Actions     []string             `json:"actions,omitempty"`
 }
 
 type Service struct {
+	Description       string                                `json:"description,omitempty"`
 	RetainDevices     bool                                  `json:"retain_devices,omitempty"`
 	UUID              string                                `json:"uuid"`
 	Name              string                                `json:"name"`
@@ -82,6 +86,7 @@ type Result struct {
 }
 
 const (
+	Sent      = "sent"
 	Accepted  = "accepted"
 	Submitted = "submitted"
 	Completed = "completed"

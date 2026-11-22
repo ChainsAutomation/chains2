@@ -20,7 +20,7 @@ func TestDiscoveryTranslationAndRename(t *testing.T) {
 		t.Fatal(err)
 	}
 	d := devices["kitchen/light"]
-	if d.Class != "light" || len(d.Actions) != 2 || len(registered.Devices) != 1 {
+	if len(d.Classes) != 1 || d.Classes[0] != "dimmer" || len(d.Actions) != 2 || len(registered.Devices) != 1 {
 		t.Fatalf("bad registration: %+v", registered)
 	}
 	raw := []byte(`{"state":"ON","brightness":30,"action":"single","unadvertised":true}`)
@@ -30,7 +30,7 @@ func TestDiscoveryTranslationAndRename(t *testing.T) {
 	}
 	var batch chains.ObservationBatch
 	if json.Unmarshal(live[0].Data, &batch) != nil || batch.EventType != ActionEvent || len(batch.Observations) != 1 ||
-		string(batch.Observations[0].Values["last_action"]) != `"single"` {
+		string(batch.Observations[0].Values["last_action"]) != `"single"` || string(batch.Observations[0].Values["dimlevel"]) != "15" {
 		t.Fatalf("invalid batch: %+v", batch)
 	}
 	again, _ := b.translate(d, raw, false)
@@ -41,8 +41,12 @@ func TestDiscoveryTranslationAndRename(t *testing.T) {
 	if len(retained) != 1 || retained[0].Type != chains.Report {
 		t.Fatalf("retained: %+v", retained)
 	}
-	if _, err := d.command(chains.Action{Name: "set_brightness", Args: map[string]any{"value": 201.0}}); err == nil {
+	if _, err := d.command(chains.Action{Name: "set_brightness", Args: map[string]any{"value": 101.0}}); err == nil {
 		t.Fatal("accepted out-of-range brightness")
+	}
+	brightness, err := d.command(chains.Action{Name: "set_brightness", Args: map[string]any{"value": 50.0}})
+	if err != nil || string(brightness) != `{"brightness":101}` {
+		t.Fatalf("native brightness: %s: %v", brightness, err)
 	}
 	command, err := d.command(chains.Action{Name: "set_power", Args: map[string]any{"value": true}})
 	if err != nil || string(command) != `{"state":"ON"}` {

@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"math"
 	"sort"
 	"strings"
@@ -39,7 +38,7 @@ type device struct {
 
 var readings = map[string]string{
 	"temperature": "temperature", "humidity": "humidity", "battery": "battery",
-	"contact": "contact", "occupancy": "occupancy", "state": "power", "brightness": "brightness",
+	"contact": "contact", "occupancy": "occupancy", "state": "power", "brightness": "dimlevel",
 }
 
 func mapDevice(d inventoryDevice) (device, bool) {
@@ -49,15 +48,13 @@ func mapDevice(d inventoryDevice) (device, bool) {
 		d.Name == "" || strings.ContainsAny(d.Name, "+#\x00") || strings.Trim(d.Name, "/") != d.Name || d.Name == "bridge" || strings.HasPrefix(d.Name, "bridge/") {
 		return device{}, false
 	}
-	result := device{Device: chains.Device{ID: id, Name: d.Name, Class: "sensor"}, fields: map[string]expose{}}
+	result := device{Device: chains.Device{ID: id, Name: d.Name, Attributes: map[string]chains.Attribute{}}, fields: map[string]expose{}}
+	isLight := false
 	var walk func([]expose)
 	walk = func(items []expose) {
 		for _, item := range items {
 			if item.Type == "light" {
-				result.Class = "light"
-			}
-			if item.Property == "action" && result.Class == "sensor" {
-				result.Class = "button"
+				isLight = true
 			}
 			if _, ok := readings[item.Property]; ok {
 				result.fields[item.Property] = item
@@ -70,23 +67,46 @@ func mapDevice(d inventoryDevice) (device, bool) {
 	}
 	walk(d.Definition.Exposes)
 	for native, field := range result.fields {
-		if native == "action" {
-			result.Attributes = append(result.Attributes, "last_action")
-		}
-		if name, ok := readings[native]; ok && field.Access&1 != 0 {
-			result.Attributes = append(result.Attributes, name)
-		}
-		if field.Access&2 == 0 {
+		if field.Access&1 == 0 {
 			continue
 		}
 		switch native {
+		case "action":
+			result.Attributes["last_action"] = chains.Attribute{Schema: json.RawMessage(`{"type":"string"}`)}
 		case "state":
-			result.Actions = append(result.Actions, "set_power")
+			result.Attributes["power"] = chains.Attribute{Schema: json.RawMessage(chains.PowerSchema)}
+			if field.Access&2 != 0 {
+				result.Attributes["power"] = chains.Writable(chains.PowerSchema, "set_power")
+				result.Actions = append(result.Actions, "set_power")
+			}
 		case "brightness":
-			result.Actions = append(result.Actions, "set_brightness")
+			low, high := field.rangeOfBrightness()
+			if high <= low {
+				delete(result.fields, native)
+				continue
+			}
+			attribute := chains.Attribute{Schema: json.RawMessage(chains.DimlevelSchema), Label: "Brightness", Unit: "%"}
+			if field.Access&2 != 0 {
+				attribute = chains.Writable(chains.DimlevelSchema, "set_brightness")
+				attribute.Label, attribute.Unit = "Brightness", "%"
+				result.Actions = append(result.Actions, "set_brightness")
+			}
+			result.Attributes["dimlevel"] = attribute
+		case "contact", "occupancy":
+			result.Attributes[readings[native]] = chains.Attribute{Schema: json.RawMessage(chains.PowerSchema)}
+		default:
+			result.Attributes[readings[native]] = chains.Attribute{Schema: json.RawMessage(`{"type":"number"}`)}
 		}
 	}
-	sort.Strings(result.Attributes)
+	if result.Attributes["power"].Setter != nil {
+		result.Classes = []string{"toggle"}
+		if isLight {
+			result.Classes = []string{"light"}
+			if result.Attributes["dimlevel"].Setter != nil {
+				result.Classes = []string{"dimmer"}
+			}
+		}
+	}
 	sort.Strings(result.Actions)
 	return result, len(result.fields) > 0
 }
@@ -105,7 +125,7 @@ func (b *Bridge) discover(ctx context.Context, raw []byte, submit submitFunc) (m
 		},
 		Actions: map[string]map[string]json.RawMessage{
 			"set_power":      {"1": json.RawMessage(`{"type":"object","required":["value"],"properties":{"value":{"type":"boolean"}},"additionalProperties":false}`)},
-			"set_brightness": {"1": json.RawMessage(`{"type":"object","required":["value"],"properties":{"value":{"type":"integer"}},"additionalProperties":false}`)},
+			"set_brightness": {"1": json.RawMessage(`{"type":"object","required":["value"],"properties":{"value":{"type":"integer","minimum":0,"maximum":100}},"additionalProperties":false}`)},
 		}}
 	byName, byID := map[string]device{}, map[string]device{}
 	for _, candidate := range candidates {
@@ -161,6 +181,11 @@ func (b *Bridge) translate(d device, raw []byte, retained bool) ([]chains.Messag
 			if power, ok := field.power(value); ok {
 				state["power"] = power
 			}
+		case "brightness":
+			if v, ok := value.(float64); ok {
+				low, high := field.rangeOfBrightness()
+				state["dimlevel"] = int(math.Round(100 * (max(low, min(high, v)) - low) / (high - low)))
+			}
 		case "contact", "occupancy":
 			if v, ok := value.(bool); ok {
 				state[readings[name]] = v
@@ -189,7 +214,7 @@ func (b *Bridge) translate(d device, raw []byte, retained bool) ([]chains.Messag
 
 func (b *Bridge) message(d device, kind string, data any) (chains.Message, error) {
 	m, err := chains.New(kind, b.ID(), data)
-	m.DeviceID, m.ServiceID, m.ServiceType, m.DeviceClass = d.ID, b.ID(), "zigbee2mqtt", d.Class
+	m.DeviceID, m.ServiceID, m.ServiceType, m.DeviceClasses = d.ID, b.ID(), "zigbee2mqtt", d.Classes
 	return m, err
 }
 
@@ -236,17 +261,12 @@ func (d device) command(action chains.Action) ([]byte, error) {
 	case "set_brightness":
 		native = "brightness"
 		field := d.fields[native]
-		min, max := 0.0, 254.0
-		if field.Min != nil {
-			min = *field.Min
-		}
-		if field.Max != nil {
-			max = *field.Max
-		}
+		low, high := field.rangeOfBrightness()
 		n, ok := value.(float64)
-		if !ok || math.Trunc(n) != n || n < min || n > max {
-			return nil, fmt.Errorf("brightness must be an integer from %g to %g", min, max)
+		if !ok || math.Trunc(n) != n || n < 0 || n > 100 || high <= low {
+			return nil, errors.New("dimlevel must be an integer from 0 to 100 percent")
 		}
+		value = math.Round(low + n*(high-low)/100)
 	default:
 		return nil, errors.New("unsupported Zigbee2MQTT action")
 	}
@@ -254,4 +274,15 @@ func (d device) command(action chains.Action) ([]byte, error) {
 		return nil, errors.New("Zigbee2MQTT capability is not writable")
 	}
 	return json.Marshal(map[string]any{native: value})
+}
+
+func (f expose) rangeOfBrightness() (float64, float64) {
+	low, high := 0.0, 254.0
+	if f.Min != nil {
+		low = *f.Min
+	}
+	if f.Max != nil {
+		high = *f.Max
+	}
+	return low, high
 }

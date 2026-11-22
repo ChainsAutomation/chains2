@@ -62,11 +62,14 @@ func (r *Runtime) updateState(ctx context.Context, device string, at, changed ti
 	}
 	encoded := map[string]json.RawMessage{}
 	for k, v := range values {
-		if !containsString(d.Attributes, k) {
+		if _, ok := d.Attributes[k]; !ok {
 			return fmt.Errorf("undeclared state attribute %s/%s", device, k)
 		}
 		raw, err := json.Marshal(v)
 		if err != nil {
+			return err
+		}
+		if err := r.validateAttribute(device, k, raw); err != nil {
 			return err
 		}
 		encoded[k] = raw
@@ -115,13 +118,12 @@ func (r *Runtime) updateState(ctx context.Context, device string, at, changed ti
 	return nil
 }
 
-func containsString(values []string, wanted string) bool {
-	for _, v := range values {
-		if v == wanted {
-			return true
-		}
+func (r *Runtime) validateAttribute(device, name string, raw json.RawMessage) error {
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return err
 	}
-	return false
+	return r.attributeSchemas[device][name].Validate(value)
 }
 
 func (r *Runtime) defaultDevice() string {

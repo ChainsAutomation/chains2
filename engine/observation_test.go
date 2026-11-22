@@ -43,15 +43,15 @@ return
 	service := chains.Service{UUID: client.Source, Name: "Amplifier", ServiceType: "amplifier",
 		Events: map[string]map[string]json.RawMessage{kind: {"1": json.RawMessage(`{"type":"object"}`)}},
 		Devices: []chains.Device{
-			{ID: "zone1", Name: "Main", Class: "zone", Attributes: []string{"volume", "muted"}},
-			{ID: "zone2", Name: "Main", Class: "zone", Attributes: []string{"volume", "muted"}},
+			{ID: "zone1", Name: "Main", Attributes: chains.Attributes("volume", "muted")},
+			{ID: "zone2", Name: "Main", Attributes: chains.Attributes("volume", "muted")},
 		},
 	}
 	if err := client.Register(f.ctx, service); err != nil {
 		t.Fatal(err)
 	}
 	eventually(t, "both devices on the worker", func() bool {
-		return worker.ready.Load() && len(worker.ResolveDevices(map[string]string{"service_name": "Amplifier", "device_name": "Main"})) == 2
+		return worker.ready.Load() && len(worker.ResolveDevices(map[string]string{"service_name": "Amplifier", "device_name": "Main"}, chains.PlacementFilter{})) == 2
 	})
 	if _, err := worker.ResolveDevice("Amplifier", "Main"); err == nil {
 		t.Fatal("ambiguous name resolved as one device")
@@ -153,8 +153,8 @@ func TestOversizedChangeRejectsWholeBatch(t *testing.T) {
 	}
 	defer authority.Close()
 	service := chains.Service{UUID: "source", Name: "Source", ServiceType: "fixture", Devices: []chains.Device{
-		{ID: "one", Class: "device", Attributes: []string{"value"}},
-		{ID: "two", Class: "device", Attributes: []string{"value"}},
+		{ID: "one", Attributes: chains.Attributes("value")},
+		{ID: "two", Attributes: chains.Attributes("value")},
 	}}
 	registration, _ := chains.New(chains.Registration, service.UUID, service)
 	if err := authority.handle(f.ctx, registration); err != nil {

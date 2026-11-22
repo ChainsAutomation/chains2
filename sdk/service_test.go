@@ -66,7 +66,7 @@ func TestManagedService(t *testing.T) {
 	reconnect := make(chan struct{}, 1)
 	lifecycle := make(chan string, 4)
 	definition := Definition{
-		Service: chains.Service{ServiceType: "fixture", Devices: []chains.Device{{ID: "default", Name: "Example", Class: "device", Attributes: []string{"power"}, Actions: []string{"inspect"}}},
+		Service: chains.Service{ServiceType: "fixture", Devices: []chains.Device{{ID: "default", Name: "Example", Attributes: chains.Attributes("power"), Actions: []string{"inspect"}}},
 			Actions: map[string]map[string]json.RawMessage{"inspect": {"1": json.RawMessage(`{"type":"object","additionalProperties":false}`)}}},
 		Actions: map[string]map[string]ActionHandler{"inspect": {"1": func(ctx context.Context, r *Runtime, _ chains.Message, _ chains.Action) (any, error) {
 			calls.Add(1)

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"maps"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -40,10 +41,12 @@ type Change struct {
 }
 
 type Update struct {
-	Epoch    string                          `json:"epoch"`
-	Revision uint64                          `json:"revision"`
-	Devices  map[string]map[string]Attribute `json:"devices,omitempty"`
-	Service  *chains.Service                 `json:"service,omitempty"`
+	registration *chains.Service
+	placement    *placementWrite
+	Epoch        string                          `json:"epoch"`
+	Revision     uint64                          `json:"revision"`
+	Devices      map[string]map[string]Attribute `json:"devices,omitempty"`
+	Service      *chains.Service                 `json:"service,omitempty"`
 }
 
 const Updated = "state.committed"
@@ -76,7 +79,7 @@ func (v *View) Lookup(address string) map[string]any {
 	defer v.mu.RUnlock()
 	values := map[string]any{}
 	metadata := map[string]any{}
-	for k, a := range v.data.Devices[address] {
+	for k, a := range v.visibleAttributes(address) {
 		var value any
 		_ = json.Unmarshal(a.Value, &value)
 		values[k] = value
@@ -157,6 +160,8 @@ func (v *View) apply(u Update) {
 }
 
 type Authority struct {
+	defaults   map[string]chains.Service
+	placements map[string]PlacementOverride
 	*View
 	db *database
 	mu sync.Mutex
@@ -168,12 +173,17 @@ func Open(path string) (*Authority, error) {
 		return nil, err
 	}
 	v := NewView()
-	if err = db.load(&v.data); err != nil {
+	placements := map[string]PlacementOverride{}
+	if err = db.load(&v.data, placements); err != nil {
 		db.close()
 		return nil, err
 	}
 	v.data.Epoch = chains.ID()
-	return &Authority{View: v, db: db}, nil
+	a := &Authority{View: v, db: db, defaults: maps.Clone(v.data.Services), placements: placements}
+	for id, service := range a.defaults {
+		v.data.Services[id] = a.effective(service)
+	}
+	return a, nil
 }
 
 func (a *Authority) Close() { a.db.close() }
@@ -186,11 +196,13 @@ func (a *Authority) Register(m chains.Message, s chains.Service) (Update, error)
 	}
 	a.View.mu.Lock()
 	defer a.View.mu.Unlock()
-	u := Update{Epoch: a.data.Epoch, Revision: a.data.Revision + 1, Service: &s}
+	effective := a.effective(s)
+	u := Update{Epoch: a.data.Epoch, Revision: a.data.Revision + 1, Service: &effective, registration: &s}
 	applied, err := a.db.commit(m.Source+"/"+m.ID, u)
 	if err != nil || !applied {
 		return Update{}, err
 	}
+	a.defaults[s.UUID] = s
 	a.apply(u)
 	return u, nil
 }
@@ -309,25 +321,35 @@ func (v *View) Query(service, device, attribute string) (any, bool) {
 			if d.ID != device {
 				continue
 			}
-			values := v.data.Devices[Address(service, device)]
+			values := v.visibleAttributes(Address(service, device))
 			if attribute != "" {
 				a, ok := values[attribute]
 				return a, ok
 			}
-			return maps.Clone(availableAttributes(values)), true
+			return values, true
 		}
 		return nil, false
 	}
 	devices := make(map[string]map[string]Attribute, len(s.Devices))
 	for _, d := range s.Devices {
-		devices[d.ID] = maps.Clone(availableAttributes(v.data.Devices[Address(service, d.ID)]))
+		devices[d.ID] = v.visibleAttributes(Address(service, d.ID))
 	}
 	return devices, true
 }
 
-func availableAttributes(v map[string]Attribute) map[string]Attribute {
-	if v == nil {
-		return map[string]Attribute{}
+func (v *View) visibleAttributes(address string) map[string]Attribute {
+	visible := map[string]Attribute{}
+	service, device, _ := strings.Cut(address, "/")
+	for _, d := range v.data.Services[service].Devices {
+		if d.ID != device {
+			continue
+		}
+		for key := range d.Attributes {
+			if value, ok := v.data.Devices[address][key]; ok {
+				visible[key] = value
+			}
+		}
+		break
 	}
-	return v
+	return visible
 }

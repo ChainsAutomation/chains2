@@ -36,7 +36,7 @@ docker compose --env-file deploy/.env -f deploy/compose.yaml exec -T mosquitto \
   mosquitto_pub -q 1 -t sensors/bathroom/humidity -m 72.5
 ```
 
-The fan should report power on. `docker compose --env-file deploy/.env -f deploy/compose.yaml logs fan` shows the action. Run `down` with the same Compose arguments to stop the demo. The named authority volume retains SQLite state.
+The fan should report power on. `docker compose --env-file deploy/.env -f deploy/compose.yaml logs fan` shows the action. Run `down` with the same Compose arguments to stop the demo. The named authority volume retains SQLite state and the web rule catalog at `/var/lib/chains/state.sqlite.rules`.
 
 ## Use Redis Streams
 

@@ -98,7 +98,7 @@ func runEngine(ctx context.Context, c config) error {
 		}
 		bridge = z2m.New(c.Z2M, nil)
 	}
-	compiled, err := loadRules(c.Rules)
+	compiled, sources, err := loadRules(c.Rules)
 	if err != nil {
 		return err
 	}
@@ -144,8 +144,12 @@ func runEngine(ctx context.Context, c config) error {
 	defer b.Close()
 	lifetime, cancel := context.WithCancel(ctx)
 	defer cancel()
+	webRulesDir := c.WebRulesDir
+	if webRulesDir == "" && c.Database != "" && c.Database != ":memory:" {
+		webRulesDir = c.Database + ".rules"
+	}
 	e, err := engine.Open(lifetime, b, engine.Options{
-		ID: c.ID, AuthorityID: c.Authority, Database: c.Database, Rules: compiled, EventTypes: c.Types, Calendar: cal,
+		ID: c.ID, AuthorityID: c.Authority, Database: c.Database, RuleSources: sources, WebRulesDir: webRulesDir, Rules: compiled, EventTypes: c.Types, Calendar: cal,
 		LocalService: bridge, Encoding: chains.Encoding(c.Encoding),
 		OperatorAPI: c.OperatorAPI, OperatorTrace: c.OperatorTrace,
 		OpenOperatorBus: func(ctx context.Context, sub bus.Subscription) (bus.Bus, error) {
@@ -205,7 +209,7 @@ func runSensor(ctx context.Context, c config) error {
 	if err := mapping.validate(); err != nil {
 		return err
 	}
-	service := chains.Service{UUID: c.ID, Name: "MQTT sensor", ServiceType: "mqtt_sensor", Devices: []chains.Device{{ID: mapping.Device, Name: mapping.Device, Class: mapping.Class, Attributes: []string{mapping.Attribute}}}, Events: map[string]map[string]json.RawMessage{mapping.Event: {"1": mapping.Schema}}}
+	service := chains.Service{UUID: c.ID, Name: "MQTT sensor", ServiceType: "mqtt_sensor", Devices: []chains.Device{{ID: mapping.Device, Name: mapping.Device, Attributes: mapping.attributes()}}, Events: map[string]map[string]json.RawMessage{mapping.Event: {"1": mapping.Schema}}}
 	inputAddress := c.SensorBroker
 	if inputAddress == "" {
 		inputAddress = c.Bus
@@ -270,7 +274,7 @@ func runSensor(ctx context.Context, c config) error {
 }
 
 func runFan(ctx context.Context, c config) error {
-	service := chains.Service{UUID: c.ID, Name: "Simulated fan", ServiceType: "sim_fan", Devices: []chains.Device{{ID: "fan", Name: "Bathroom fan", Class: "fan", Attributes: []string{"power"}, Actions: []string{"set_power"}}}, Actions: map[string]map[string]json.RawMessage{"set_power": {"1": json.RawMessage(powerSchema)}}}
+	service := chains.Service{UUID: c.ID, Name: "Simulated fan", ServiceType: "sim_fan", Devices: []chains.Device{{ID: "fan", Name: "Bathroom fan", Classes: []string{"toggle"}, Attributes: map[string]chains.Attribute{"power": chains.Writable(chains.PowerSchema, "set_power")}, Actions: []string{"set_power"}}}, Actions: map[string]map[string]json.RawMessage{"set_power": {"1": json.RawMessage(powerSchema)}}}
 	b, err := openBus(ctx, c.Bus, c.Namespace, bus.Subscription{Types: []string{chains.Request}})
 	if err != nil {
 		return err
@@ -307,20 +311,20 @@ func parseWeekConvention(raw string) *rules.WeekConvention {
 	return &rules.WeekConvention{FirstDay: first, MinDays: minDays}
 }
 
-func loadRules(path string) ([]rules.Rule, error) {
+func loadRules(path string) ([]rules.Rule, map[string]string, error) {
 	info, err := os.Stat(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	paths := []string{path}
 	if info.IsDir() {
 		paths = nil
 		entries, err := os.ReadDir(path)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		for _, entry := range entries {
 			if !entry.IsDir() && filepath.Ext(entry.Name()) == ".chains" {
@@ -328,18 +332,20 @@ func loadRules(path string) ([]rules.Rule, error) {
 			}
 		}
 	}
+	sources := make(map[string]string, len(paths))
 	compiled := make([]rules.Rule, 0, len(paths))
 	for _, file := range paths {
 		raw, err := os.ReadFile(file)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		name := strings.TrimSuffix(filepath.Base(file), filepath.Ext(file))
 		rule, err := rules.Parse(name, string(raw))
 		if err != nil {
-			return nil, fmt.Errorf("%s: %w", file, err)
+			return nil, nil, fmt.Errorf("%s: %w", file, err)
 		}
 		compiled = append(compiled, rule)
+		sources[name] = string(raw)
 	}
-	return compiled, nil
+	return compiled, sources, nil
 }

@@ -12,11 +12,12 @@ const (
 )
 
 type Observation struct {
-	DeviceID    string                     `json:"device_id"`
-	Values      map[string]json.RawMessage `json:"values"`
-	Data        json.RawMessage            `json:"data,omitempty"`
-	DeviceName  string                     `json:"device_name,omitempty"`
-	DeviceClass string                     `json:"device_class,omitempty"`
+	Placement
+	DeviceID      string                     `json:"device_id"`
+	Values        map[string]json.RawMessage `json:"values"`
+	Data          json.RawMessage            `json:"data,omitempty"`
+	DeviceName    string                     `json:"device_name,omitempty"`
+	DeviceClasses []string                   `json:"device_classes,omitempty"`
 }
 
 type ObservationBatch struct {

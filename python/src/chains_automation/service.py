@@ -11,6 +11,7 @@ from pathlib import Path
 from queue import Empty, Full, Queue
 import re
 import signal
+import unicodedata
 from tempfile import NamedTemporaryFile
 from threading import Event, Lock, Thread, current_thread, get_ident, main_thread
 from time import monotonic
@@ -66,6 +67,7 @@ class Service:
     service_type = None
     settings_type = None
     attributes = ()
+    description = ""
     event_attributes = {}
     retain_devices = False
 
@@ -131,9 +133,34 @@ class Service:
             raise ValueError("Invalid event subscription")
         self._subscriptions.update(types)
 
+    @staticmethod
+    def _attribute_descriptions(attributes):
+        if not isinstance(attributes, dict):
+            attributes = {name: {"schema": {}} for name in attributes}
+        for name, descriptor in attributes.items():
+            if not IDENTIFIER.fullmatch(name) or name == "_attributes":
+                raise ValueError(f"Invalid attribute {name}")
+            Draft202012Validator.check_schema(descriptor["schema"])
+        return attributes
+
+    @staticmethod
+    def _normalize_placement(device):
+        for key in ("location", "tags"):
+            if key not in device:
+                continue
+            parts = device[key]
+            if not isinstance(parts, (list, tuple)) or len(parts) > 32 or any(
+                not isinstance(part, str) or not part or len(part.encode("utf-8")) > 128
+                or part.strip() != part or part in {"*", "**"}
+                or any(unicodedata.category(char) == "Cc" for char in part)
+                for part in parts
+            ):
+                raise ValueError(f"Invalid device {key}")
+            device[key] = sorted(set(parts)) if key == "tags" else list(parts)
+
     def describe_devices(self):
-        return [{"id": DEFAULT_DEVICE, "name": "System", "class": "device",
-                 "attributes": list(self.attributes)}]
+        return [{"id": DEFAULT_DEVICE, "name": "System", "classes": [],
+                 "attributes": self._attribute_descriptions(deepcopy(self.attributes))}]
 
     def describe(self):
         """Reflect the service registration without invoking methods or connecting."""
@@ -169,12 +196,14 @@ class Service:
                 raise ValueError(f"All versions of {cap.name} must agree on idempotence")
         self._default_device = DEFAULT_DEVICE if DEFAULT_DEVICE in ids else ids[0]
         for device in devices:
-            attributes = set(device.get("attributes", []))
+            self._normalize_placement(device)
+            attributes = self._attribute_descriptions(device.get("attributes", {}))
+            device.setdefault("classes", [])
             for method, cap in caps["event"].items():
                 attribute = self._event_attribute(method)
                 if attribute and (cap.device or self._default_device) == device["id"]:
-                    attributes.add(attribute)
-            device["attributes"] = sorted(attributes)
+                    attributes.setdefault(attribute, {"schema": cap.validator.schema})
+            device["attributes"] = attributes
             actions = {cap.name for cap in caps["action"].values()
                        if (cap.device or self._default_device) == device["id"]}
             device["actions"] = sorted(actions | {"get_state"})
@@ -193,7 +222,7 @@ class Service:
         if self.config.service_id == "":
             self.config.service_id = stable_identity(self.service_type, self.config.instance)
         return {"uuid": self.config.service_id, "service_type": self.service_type,
-                "name": self.config.name or self.config.instance, "devices": devices,
+                "name": self.config.name or self.config.instance, "description": self.description, "devices": devices,
                 "retain_devices": self.retain_devices,
                 "events": versions(schemas["event"]), "actions": versions(schemas["action"]),
                 "idempotent_actions": sorted(idempotent)}
@@ -227,8 +256,8 @@ class Service:
             emitter = self._resolve_emitter(emit) if emit is not None else None
             self._devices = {d["id"]: d for d in self._registration["devices"]}
             for device, tree in self._state.items():
-                for attribute in tree:
-                    self._check_attribute(device, attribute)
+                for attribute, record in tree.items():
+                    self._check_attribute(device, attribute, record["value"])
             types = () if "*" in self._subscriptions else tuple(sorted(self._subscriptions | set(CONTROL_TYPES)))
             transport = self._injected_transport
             if transport is None:
@@ -345,8 +374,11 @@ class Service:
         """Publish an updated description before using a newly discovered device."""
         device = deepcopy(device)
         device_id = device["id"]
-        if not IDENTIFIER.fullmatch(device_id) or not IDENTIFIER.fullmatch(device["class"]):
+        if not IDENTIFIER.fullmatch(device_id):
             raise ValueError("Invalid device description")
+        self._normalize_placement(device)
+        device.setdefault("classes", [])
+        device["attributes"] = self._attribute_descriptions(device.get("attributes", {}))
         device.setdefault("actions", ["get_state"])
         with self._send_lock:
             if device_id in self._devices:
@@ -409,8 +441,8 @@ class Service:
             if device not in self._devices or device in seen or not isinstance(values, dict) or not values:
                 raise ValueError("Invalid observation device or values")
             seen.add(device)
-            for name in values:
-                self._check_attribute(device, name)
+            for name, value in values.items():
+                self._check_attribute(device, name, value)
             if cap is not None:
                 cap.validator.validate(patch.get("data", values))
         result = observation_message(self.config.service_id, kind, observations,
@@ -446,9 +478,11 @@ class Service:
                            {"instance_id": self._instance_id, "interval_seconds": interval},
                            expires_at=(utcnow() + timedelta(seconds=3 * interval)).isoformat()))
 
-    def _check_attribute(self, device, attribute):
-        if attribute not in self._devices.get(device, {}).get("attributes", ()):
+    def _check_attribute(self, device, attribute, value):
+        descriptor = self._devices.get(device, {}).get("attributes", {}).get(attribute)
+        if descriptor is None:
             raise ValueError(f"Undeclared state attribute {device}/{attribute}")
+        Draft202012Validator(descriptor["schema"]).validate(value)
 
     def set_state(self, device=None, /, **attributes):
         self._update_state(device or getattr(self, "_default_device", DEFAULT_DEVICE), False, utcnow(), attributes)
@@ -467,8 +501,8 @@ class Service:
             raise ValueError("State update exceeds the message limit")
         values = json.loads(wire)
         if hasattr(self, "_devices"):
-            for name in values:
-                self._check_attribute(device, name)
+            for name, value in values.items():
+                self._check_attribute(device, name, value)
         stamp = observed_at.astimezone(timezone.utc)
         cause = _action.get() if not silent else None
         with self._state_lock:

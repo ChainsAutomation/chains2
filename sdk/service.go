@@ -38,31 +38,32 @@ type Definition struct {
 }
 
 type Runtime struct {
-	Config        Config // Read-only while the runtime is running.
-	definition    Definition
-	registration  chains.Service
-	client        Client
-	ctx           context.Context
-	stop          context.CancelFunc
-	log           *slog.Logger
-	instance      string
-	online        atomic.Bool
-	subscriptions map[string]bool
-	schemas       map[string]map[string]*jsonschema.Resolved
-	actions       map[string]map[string]*jsonschema.Resolved
-	sendMu        sync.Mutex
-	workers       sync.WaitGroup
-	wake          chan struct{}
-	reset         atomic.Bool
-	incoming      chan chains.Message
-	callbacks     chan func(context.Context) error
-	failure       chan error
-	stateMu       sync.Mutex
-	state         LocalState
-	reports       []chains.Message
-	queryMu       sync.Mutex
-	queries       map[string]chan queryResult
-	outgoing      chan queryRequest
+	attributeSchemas map[string]map[string]*jsonschema.Resolved
+	Config           Config // Read-only while the runtime is running.
+	definition       Definition
+	registration     chains.Service
+	client           Client
+	ctx              context.Context
+	stop             context.CancelFunc
+	log              *slog.Logger
+	instance         string
+	online           atomic.Bool
+	subscriptions    map[string]bool
+	schemas          map[string]map[string]*jsonschema.Resolved
+	actions          map[string]map[string]*jsonschema.Resolved
+	sendMu           sync.Mutex
+	workers          sync.WaitGroup
+	wake             chan struct{}
+	reset            atomic.Bool
+	incoming         chan chains.Message
+	callbacks        chan func(context.Context) error
+	failure          chan error
+	stateMu          sync.Mutex
+	state            LocalState
+	reports          []chains.Message
+	queryMu          sync.Mutex
+	queries          map[string]chan queryResult
+	outgoing         chan queryRequest
 }
 
 var protocolTypes = map[string]bool{
@@ -195,7 +196,7 @@ func (r *Runtime) prepare() error {
 		r.registration.Name = r.Config.Instance
 	}
 	if len(r.registration.Devices) == 0 {
-		r.registration.Devices = []chains.Device{{ID: "system", Name: "System", Class: "system"}}
+		r.registration.Devices = []chains.Device{{ID: "system", Name: "System"}}
 	}
 	if r.registration.Actions == nil {
 		r.registration.Actions = map[string]map[string]json.RawMessage{}
@@ -212,15 +213,32 @@ func (r *Runtime) prepare() error {
 	}
 	r.registration.IdempotentActions = append(r.registration.IdempotentActions, "get_state")
 	ids := map[string]bool{}
+	r.attributeSchemas = map[string]map[string]*jsonschema.Resolved{}
 	for i, d := range r.registration.Devices {
-		if !chains.Segment(d.ID) || !chains.Segment(d.Class) || ids[d.ID] {
+		if !chains.Segment(d.ID) || ids[d.ID] {
 			return errors.New("invalid or duplicate device")
 		}
 		ids[d.ID] = true
-		for _, attribute := range d.Attributes {
+		if err := r.registration.Devices[i].Placement.Normalize(); err != nil {
+			return fmt.Errorf("device %s: %w", d.ID, err)
+		}
+		r.attributeSchemas[d.ID] = map[string]*jsonschema.Resolved{}
+		if d.Classes == nil {
+			r.registration.Devices[i].Classes = []string{}
+		}
+		for attribute, descriptor := range d.Attributes {
 			if !chains.Segment(attribute) || attribute == "_attributes" {
 				return fmt.Errorf("invalid attribute on device %s", d.ID)
 			}
+			var schema jsonschema.Schema
+			if err := json.Unmarshal(descriptor.Schema, &schema); err != nil {
+				return fmt.Errorf("attribute %s: %w", attribute, err)
+			}
+			resolved, err := schema.Resolve(nil)
+			if err != nil {
+				return fmt.Errorf("attribute %s: %w", attribute, err)
+			}
+			r.attributeSchemas[d.ID][attribute] = resolved
 		}
 		for _, action := range d.Actions {
 			if action == "get_state" || len(r.registration.Actions[action]) == 0 {
@@ -371,9 +389,12 @@ func (r *Runtime) ObserveBatch(ctx context.Context, kind, version string, observ
 			return errors.New("invalid observation device")
 		}
 		seen[o.DeviceID] = true
-		for name := range o.Values {
-			if !containsString(d.Attributes, name) {
+		for name, raw := range o.Values {
+			if _, ok := d.Attributes[name]; !ok {
 				return fmt.Errorf("undeclared state attribute %s/%s", o.DeviceID, name)
+			}
+			if err := r.validateAttribute(o.DeviceID, name, raw); err != nil {
+				return err
 			}
 		}
 		if schema != nil {

@@ -105,7 +105,7 @@ class RFLink(ReaderService):
         self._serial = serial
 
     def describe_devices(self):
-        return [{"id": "system", "name": "RFLink gateway", "class": "gateway", "attributes": []}]
+        return [{"id": "system", "name": "RFLink gateway", "classes": [], "attributes": []}]
 
     def read_source(self):
         with self._serial.Serial(self.settings.port, self.settings.baudrate, timeout=0.2) as port:

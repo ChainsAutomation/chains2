@@ -85,8 +85,9 @@ class Frigate(ReaderService):
 
     def _emit_camera(self, attribute, update, camera):
         device = self.camera_id(camera)
-        self.register_device({"id": device, "name": camera, "class": "camera",
-                              "attributes": ["last_object", "last_review"]})
+        self.register_device({"id": device, "name": camera, "classes": [],
+                              "attributes": {name: {"schema": {"type": "object"}}
+                                             for name in ("last_object", "last_review")}})
         self._send_event(_device=device, _values={attribute: update})
 
     def read_source(self):

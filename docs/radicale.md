@@ -29,7 +29,7 @@ tasks = "home/tasks/"
 people = "home/addressbook/"
 ```
 
-Use an account with the needed Radicale rights. Both permission lists default to empty and grant their operation independently. Each alias becomes a Chains device with class `dav_collection`. Changes and alarms update its `last_entry`, `last_contact`, `last_todo`, or `last_alarm` attribute. Service actions are on the `system` device. Start another service instance with its own config and instance name to connect a different account. Settings follow the [Python SDK precedence](sdk-python.md#configuration). For example, `--sync-interval 10` overrides the file, and `CHAINS_SETTINGS__SYNC_INTERVAL=15` overrides both. Use HTTPS for connections carrying credentials.
+Use an account with the needed Radicale rights. Both permission lists default to empty and grant their operation independently. Each alias becomes a Chains device. Changes and alarms update its `last_entry`, `last_contact`, `last_todo`, or `last_alarm` attribute. Service actions are on the `system` device. Start another service instance with its own config and instance name to connect a different account. Settings follow the [Python SDK precedence](sdk-python.md#configuration). For example, `--sync-interval 10` overrides the file, and `CHAINS_SETTINGS__SYNC_INTERVAL=15` overrides both. Use HTTPS for connections carrying credentials.
 
 ## Watch for changes and alarms
 

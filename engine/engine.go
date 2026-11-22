@@ -25,6 +25,8 @@ type Options struct {
 	AuthorityID     string
 	Database        string
 	Rules           []rules.Rule
+	RuleSources     map[string]string
+	WebRulesDir     string
 	EventTypes      []string
 	Calendar        rules.Calendar
 	Encoding        chains.Encoding
@@ -37,11 +39,13 @@ type Options struct {
 }
 
 type Engine struct {
+	placementEdits  chan placementEdit
 	node            sdk.Client
 	authorityID     string
 	authority       *state.Authority
 	view            *state.View
 	runtime         *rules.Runtime
+	ruleCatalog     *ruleCatalog
 	eventTypes      []string
 	log             *slog.Logger
 	mu              sync.Mutex
@@ -96,6 +100,7 @@ func Open(ctx context.Context, b bus.Bus, o Options) (*Engine, error) {
 			return nil, err
 		}
 		e.authority, e.view = a, a.View
+		e.placementEdits = make(chan placementEdit)
 		if o.OperatorAPI {
 			if err := e.registerOperator(); err != nil {
 				a.Close()
@@ -119,6 +124,27 @@ func Open(ctx context.Context, b bus.Bus, o Options) (*Engine, error) {
 		}
 		if o.OperatorTrace {
 			trace = e.ruleTrace
+		}
+	}
+	if e.authority != nil {
+		catalog, err := openRuleCatalog(o.WebRulesDir, o.RuleSources)
+		if err != nil {
+			e.authority.Close()
+			return nil, fmt.Errorf("open web rules: %w", err)
+		}
+		e.ruleCatalog = catalog
+		for _, item := range catalog.entries {
+			if item.Origin != "web" {
+				continue
+			}
+			rule, err := parseWebRule(item.Name, item.Source)
+			if err != nil {
+				e.authority.Close()
+				return nil, fmt.Errorf("stored rule %q: %w", item.Name, err)
+			}
+			if item.Enabled {
+				o.Rules = append(o.Rules, rule)
+			}
 		}
 	}
 	r, err := rules.New(ctx, e, o.Calendar, log, o.Rules, trace)
@@ -172,6 +198,12 @@ func (e *Engine) Run(ctx context.Context) error {
 				}
 			} else {
 				e.requestSnapshot(ctx)
+			}
+		case edit := <-e.placementEdits:
+			if err := edit.ctx.Err(); err != nil {
+				edit.done <- err
+			} else {
+				edit.done <- e.editPlacement(ctx, edit)
 			}
 		case input := <-local:
 			err := e.ingestLocal(ctx, input)
@@ -398,18 +430,26 @@ func (e *Engine) register(ctx context.Context, m chains.Message) error {
 	}
 	ids := map[string]bool{}
 	for _, d := range s.Devices {
-		if !chains.Segment(d.ID) || ids[d.ID] || !chains.Segment(d.Class) {
+		if !chains.Segment(d.ID) || ids[d.ID] {
 			return errors.New("invalid or duplicate device registration")
 		}
 		ids[d.ID] = true
 	}
 	if s.RetainDevices {
-		if previous, ok := e.view.Service(s.UUID); ok && previous.ServiceType == s.ServiceType {
+		if previous, ok := e.authority.DefaultService(s.UUID); ok && previous.ServiceType == s.ServiceType {
 			for _, d := range previous.Devices {
 				if !ids[d.ID] {
 					s.Devices = append(s.Devices, d)
 				}
 			}
+		}
+	}
+	for i := range s.Devices {
+		if err := s.Devices[i].Placement.Normalize(); err != nil {
+			return fmt.Errorf("device %q: %w", s.Devices[i].ID, err)
+		}
+		if err := e.describeDevice(s, &s.Devices[i]); err != nil {
+			return fmt.Errorf("device %q: %w", s.Devices[i].ID, err)
 		}
 	}
 	u, err := e.authority.Register(m, s)
@@ -438,10 +478,8 @@ func (e *Engine) report(ctx context.Context, m chains.Message) error {
 	if err := json.Unmarshal(m.Data, &values); err != nil {
 		return err
 	}
-	for name := range values {
-		if !contains(d.Attributes, name) {
-			return fmt.Errorf("unknown attribute %q", name)
-		}
+	if err := e.validateAttributes(d, values); err != nil {
+		return err
 	}
 	if !m.Silent {
 		return errors.New("state reports are reserved for silent seeds")
@@ -499,6 +537,17 @@ func contains(values []string, wanted string) bool {
 }
 
 func (e *Engine) Act(ctx context.Context, parent chains.Message, ref rules.DeviceRef, name, version string, args map[string]any) (map[string]any, error) {
+	return e.callAction(ctx, parent, ref, name, version, args, false)
+}
+
+func (e *Engine) SendAction(ctx context.Context, parent chains.Message, ref rules.DeviceRef, name, version string, args map[string]any) (map[string]any, error) {
+	return e.callAction(ctx, parent, ref, name, version, args, true)
+}
+
+func (e *Engine) callAction(ctx context.Context, parent chains.Message, ref rules.DeviceRef, name, version string, args map[string]any, sendOnly bool) (map[string]any, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if !e.ready.Load() {
 		return nil, errors.New("state view is synchronizing")
 	}
@@ -528,6 +577,22 @@ func (e *Engine) Act(ctx context.Context, parent chains.Message, ref rules.Devic
 	defer cancel()
 	deadline, _ := ctx.Deadline()
 	m.ExpiresAt = &deadline
+	if sendOnly {
+		if e.local != nil && target == e.local.service.ID() {
+			select {
+			case e.local.input <- localInput{message: m}:
+				e.traceAction(m, chains.Request, name)
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			default:
+				return nil, errors.New("local action queue full")
+			}
+		} else if err := e.node.Send(ctx, m); err != nil {
+			e.traceAction(m, "action.publish_failed", err.Error())
+			return nil, err
+		}
+		return map[string]any{"status": chains.Sent, "action_id": m.ActionID}, nil
+	}
 	if e.local != nil && target == e.local.service.ID() {
 		e.traceAction(m, chains.Request, name)
 		return e.actLocal(ctx, m), nil
@@ -555,7 +620,10 @@ func (e *Engine) Act(ctx context.Context, parent chains.Message, ref rules.Devic
 	for {
 		select {
 		case result := <-p.result:
-			response := map[string]any{"status": result.Status, "error": result.Error, "action_id": m.ActionID}
+			response := map[string]any{"status": result.Status, "action_id": m.ActionID}
+			if result.Error != "" {
+				response["error"] = result.Error
+			}
 			if len(result.Value) > 0 {
 				var value any
 				if err := json.Unmarshal(result.Value, &value); err != nil {

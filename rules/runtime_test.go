@@ -17,7 +17,9 @@ func (h runtimeHost) ResolveDevice(service, device string) (DeviceRef, error) {
 	return DeviceRef{service, device}, nil
 }
 
-func (h runtimeHost) ResolveDevices(map[string]string) []DeviceRef { return nil }
+func (h runtimeHost) ResolveDevices(map[string]string, chains.PlacementFilter) []DeviceRef {
+	return nil
+}
 
 func (h runtimeHost) State(string) map[string]any { return nil }
 func (h runtimeHost) Act(ctx context.Context, _ chains.Message, _ DeviceRef, name string, _ string, _ map[string]any) (map[string]any, error) {
@@ -151,7 +153,7 @@ func (h captureHost) ResolveDevice(service, device string) (DeviceRef, error) {
 	return DeviceRef{}, errors.New("test target unavailable")
 }
 
-func (h captureHost) ResolveDevices(selectors map[string]string) []DeviceRef {
+func (h captureHost) ResolveDevices(selectors map[string]string, _ chains.PlacementFilter) []DeviceRef {
 	if selectors["service_name"] == "Amplifier" {
 		return []DeviceRef{{"amp", "zone1"}, {"amp", "zone2"}}
 	}
@@ -190,7 +192,7 @@ func captureRuntime(t *testing.T, source string) (*Runtime, captureHost) {
 
 func dispatchEvent(r *Runtime, kind, service string, data map[string]any) {
 	m, _ := chains.New(kind, service, data)
-	m.ServiceID, m.DeviceID, m.DeviceClass = service, "shared", "light"
+	m.ServiceID, m.DeviceID, m.DeviceClasses = service, "shared", []string{"light"}
 	r.Dispatch(m)
 }
 
@@ -344,15 +346,137 @@ ev = Event(device_class=sensor)
 Action("matched",device=ev.device,value=ev.type)
 `)
 	changed, _ := chains.New(chains.Changed, "engine", map[string]any{"attribute": "value", "value": 42})
-	changed.ServiceID, changed.DeviceID, changed.DeviceClass = "sensor", "one", "sensor"
+	changed.ServiceID, changed.DeviceID, changed.DeviceClasses = "sensor", "one", []string{"sensor"}
 	r.Dispatch(changed)
 	observation, _ := chains.NewObservation("one", map[string]any{"value": 42}, nil)
-	observation.DeviceClass = "sensor"
+	observation.DeviceClasses = []string{"sensor"}
 	event, _ := chains.New("sensor.sample", "engine", nil)
 	event.ServiceID = "sensor"
 	event.Observations = []chains.Observation{observation}
 	r.Dispatch(event)
 	if got := receiveInvocation(t, h); got.args["value"] != "sensor.sample" {
 		t.Fatalf("unexpected trigger %+v", got)
+	}
+}
+
+func TestApplyCancelsOnlyReplacedRule(t *testing.T) {
+	parse := func(name, src string) Rule {
+		t.Helper()
+		rule, err := Parse(name, src)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return rule
+	}
+	old := parse("replace", `Event(type=opening)
+Event(type=finish)
+Action("old", device=Device(service_id=test, device_id=test))
+`)
+	keep := parse("keep", `Event(type=opening)
+Event(type=finish)
+Action("kept", device=Device(service_id=test, device_id=test))
+`)
+	h := captureHost{make(chan invocation, 10), make(chan error, 10)}
+	r, err := New(context.Background(), h, Calendar{}, slog.New(slog.NewTextHandler(io.Discard, nil)), []Rule{old, keep})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	dispatchEvent(r, "opening", "test", nil)
+	deadline := time.Now().Add(time.Second)
+	for {
+		r.mu.Lock()
+		count := len(r.waits["finish"])
+		r.mu.Unlock()
+		if count == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("rules did not reach their waits")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	next, err := r.Prepare(parse("replace", `Event(type=finish)
+Action("new", device=Device(service_id=test, device_id=test))
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Apply([]string{"replace"}, []*Prepared{next})
+	dispatchEvent(r, "finish", "test", nil)
+	a, b := receiveInvocation(t, h), receiveInvocation(t, h)
+	if a.name == b.name || (a.name != "new" && a.name != "kept") || (b.name != "new" && b.name != "kept") {
+		t.Fatalf("unexpected actions %q and %q", a.name, b.name)
+	}
+}
+
+func TestApplyReplacesSchedule(t *testing.T) {
+	old, err := Parse("schedule", `Every("250ms")
+Action("old",device=Device(service_id=test, device_id=test))
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err := Parse("schedule", `Every("70ms")
+Action("new",device=Device(service_id=test, device_id=test))
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := captureHost{make(chan invocation, 10), make(chan error, 10)}
+	r, err := New(context.Background(), h, Calendar{}, slog.New(slog.NewTextHandler(io.Discard, nil)), []Rule{old})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	prepared, err := r.Prepare(next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Apply([]string{"schedule"}, []*Prepared{prepared})
+	for i := 0; i < 4; i++ {
+		if got := receiveInvocation(t, h); got.name != "new" {
+			t.Fatalf("retired schedule fired: %s", got.name)
+		}
+	}
+	r.Apply([]string{"schedule"}, nil)
+	select {
+	case got := <-h.calls:
+		t.Fatalf("disabled schedule fired: %s", got.name)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func (h runtimeHost) SendAction(ctx context.Context, m chains.Message, d DeviceRef, name, version string, args map[string]any) (map[string]any, error) {
+	return h.Act(ctx, m, d, name, version, args)
+}
+func (h runtimeHost) ResolveSetter(DeviceRef, string, any) (chains.Setter, map[string]any, error) {
+	return chains.Setter{}, nil, errors.New("test setter unavailable")
+}
+
+func (h captureHost) SendAction(ctx context.Context, m chains.Message, d DeviceRef, name, version string, args map[string]any) (map[string]any, error) {
+	return h.Act(ctx, m, d, name, version, args)
+}
+func (h captureHost) ResolveSetter(DeviceRef, string, any) (chains.Setter, map[string]any, error) {
+	return chains.Setter{}, nil, errors.New("test setter unavailable")
+}
+
+func TestBatchPlacementSelectorsUseSameDevice(t *testing.T) {
+	r, h := captureRuntime(t, `
+ev = Event(type="sample", location=["**", "Shelf.1"], tags=["battery", "guest"])
+for match in ev.matches:
+    Action("matched", device=match.device)
+`)
+	m, _ := chains.New("sample", "engine", nil)
+	m.ServiceID = "service"
+	m.Observations = []chains.Observation{
+		{DeviceID: "one", Placement: chains.Placement{Location: []string{"House", "Shelf.1"}, Tags: []string{"guest"}}},
+		{DeviceID: "two", Placement: chains.Placement{Location: []string{"House", "Shelf"}, Tags: []string{"battery", "guest"}}},
+	}
+	r.Dispatch(m)
+	m.Observations[0].Tags = append(m.Observations[0].Tags, "battery")
+	r.Dispatch(m)
+	if got := receiveInvocation(t, h); got.ref.DeviceID != "one" {
+		t.Fatalf("unexpected match %+v", got)
 	}
 }

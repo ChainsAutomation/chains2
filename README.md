@@ -20,19 +20,19 @@ go build -buildvcs=false -o chains ./cmd/chains
 mosquitto_pub -q 1 -t sensors/bathroom/humidity -m 72.5
 ```
 
-A reading of at least 70 turns the simulated fan on if its reported power is off. The sensor adapter writes humidity to State in the same observation that triggers the rule. It accepts raw numbers by default. A retained MQTT reading seeds reported state without emitting a live reading event. To map another device, set `sensor_topic` and the config file's `sensor` object. The object can override `device`, `class`, `event`, `attribute`, `field`, `format`, and `schema`. Supported input formats are `number`, `boolean` (including `ON`/`OFF`), `string`, and `json`. Supply a matching JSON Schema when changing the event payload.
+A reading of at least 70 turns the simulated fan on if its reported power is off. The sensor adapter writes humidity to State in the same observation that triggers the rule. It accepts raw numbers by default. A retained MQTT reading seeds reported state without emitting a live reading event. To map another device, set `sensor_topic` and the config file's `sensor` object. The object can override `device`, `event`, `attribute`, `field`, `format`, and `schema`. Supported input formats are `number`, `boolean` (including `ON`/`OFF`), `string`, and `json`. Supply a matching JSON Schema when changing the event payload.
 
 For Redis, add `-bus redis://localhost:6379` to the engine, fan, and sensor commands. Also pass `-sensor-broker mqtt://localhost:1883` to the sensor adapter for its device input. Redis is the system bus in this deployment, while MQTT carries the raw sensor feed. The Redis adapter uses a standalone Redis server, one stream for all messages and one stream per message type, and a bounded diagnostic history. Each subscriber follows new messages independently.
 
 ## Operator console
 
-Build `./cmd/chainsctl` to inspect state, watch live events and rule runs, or send manual events. The terminal UI combines all three in a keyboard-driven view. The [operator guide](docs/operator-cli.md) covers authority setup, table, JSON and CSV output, filters, and event profiles. The [web console guide](docs/operator-web.md) covers the bundled browser UI and its Trace Explorer.
+Build `./cmd/chainsctl` to inspect state, watch live events and rule runs, or send manual events. The terminal UI combines all three in a keyboard-driven view. The [operator guide](docs/operator-cli.md) covers authority setup, table, JSON and CSV output, filters, and event profiles. The [web console guide](docs/operator-web.md) covers the bundled browser UI and its Trace Explorer. The [Devices guide](docs/devices.md) covers generated controls, location patterns, and tags.
 
 ## Rules
 
 A rule is one indentation-based `.chains` file. Pass a file or a directory containing rule files to `-rules`. Each filename supplies the rule's name.
 
-See [rules engine concurrency and latency](docs/rules-engine-concurrency.md) for event routing, run limits, CPU contention, and multi-process deployment.
+See [events and State](docs/events.md) for the observation structure, batching, and delivery guarantees. See [rules engine concurrency and latency](docs/rules-engine-concurrency.md) for event routing, run limits, CPU contention, and multi-process deployment.
 
 ```text
 Event(device_class=light)
@@ -56,7 +56,7 @@ else:
 - An opening `Event()`, `Every()`, or `Time()` starts a run after optional pure local assignments. Further waits suspend the current run. `rule.concurrency` defaults to one. `rule.timeout` defaults to 300 seconds and starts at the opening match. The same deadline applies through later waits, actions, and computation. A run ends on expiry, `return`, or the end of the file.
 - Read the latest reported attribute with `State(ev.device).power`. A missing attribute evaluates to `null`. Use `ev.data.power` for the value carried by the event itself. Read attribute timestamps under `State(ev.device)._attributes.power`. Both state values and event fields can be used directly in action arguments.
 - Use `Action("set_power", device=ev.device, value=false)` for a known device, or supply a unique `service_name` and `device_name` pair. `Device(service_id="sim-fan", device_id=fan)` builds a reference from stable IDs. `Device()` also accepts the name pair. Unbound bare words such as `fan` are string shorthand in selectors and named target fields. Quote literal names containing spaces or punctuation. Other value expressions use explicit literals or declared variables.
-- Action arguments are validated against the registered schema. Use `schema_version="2"` to select a schema version. The default is `"1"`. Actions return `completed`, `submitted`, `failed`, or `timed_out`. The engine traces `accepted` separately. Declared idempotent actions may retry while awaiting acceptance. A late device observation can still update state.
+- Action arguments are validated against the registered schema. Use `schema_version="2"` to select a schema version. The default is `"1"`. Outcome mode returns `completed`, `submitted`, `failed`, or `timed_out`. Use `wait="sent"` to continue after sending the request. The engine traces `accepted` separately. Declared idempotent actions may retry while awaiting acceptance. A late device observation can still update state.
 - Use `#` for comments. The language supports single- and double-quoted strings, lists, objects, arithmetic, comparisons, `if`/`elseif`/`else`, `switch`/`case`/`default`, `while`, and `for item in items`. Use `Has(object, key)` to check whether a field exists.
 - `Every("1s")` uses elapsed time. `Time(month=12, day=25, hour=0, minute=0)` matches local Christmas midnight. Calendar selectors support year, month, week, day, weekday (Sunday is 0), hour, minute, and second. Seconds default to zero, an hour by itself defaults to minute zero, and a date without clock fields uses midnight. Nonexistent local times are skipped and repeated local times fire once.
 
@@ -69,7 +69,13 @@ for match in ev.matches:
         Action("set_volume", device=match.device, volume=30)
 ```
 
+See [device controls and actions](docs/actions.md) for typed attributes, setters, and action wait modes.
+
 The Go `rules` package exposes the structured rule model and `Parse`, `Validate`, and `Format` for tools that generate rules.
+
+[Architecture decision on State-backed observations and leaf changes](docs/adr/0001-state-backed-observations.md) · [Architecture decision on web-managed rules](docs/adr/0002-web-managed-rules.md) · [Architecture decision on classes and setters](docs/adr/0003-device-classes-and-setters.md) · [Architecture decision on device placement](docs/adr/0004-device-placement.md)
+
+Use **Rules** in the web console to create automations, validate DSL, publish changes live, and transfer rules by file. [Rules console](docs/operator-web.md#rules)
 
 ## Configure and extend
 
@@ -97,7 +103,7 @@ To enable HTTP ingress, set `listen`, a bearer token (for example `CHAINS_TOKEN`
 
 With that source registered, a POST to `/events/humidity` bearing the token and a body of `72.5` submits an observation. `attribute` names the event payload field. `state_attribute` names the registered State attribute and defaults to `attribute`. Use a TLS proxy for remote HTTP ingress. MQTT brokers should restrict publish/subscribe access by namespace and service identity. Redis clients with stream write permission are trusted participants in the deployment. Use a private broker and TLS URLs (`mqtts://`, `rediss://`) for remote links.
 
-Go integrations use the `sdk` package with a `bus.Bus`. Python integrations can run `uv sync --project python --locked` and import `chains_automation`. Both SDKs support registration, atomic single- and multi-device observations, silent State seeding, and actions. An observation updates State at `service_id/device_id/attribute` before rules see it. One batch belongs to one service and one event type, with one State revision for all its devices. The wire protocol is version 2. Upgrade engines and publishers together. SQLite keeps values at existing registered IDs. Frigate starts its camera paths from new observations. Radicale discards any queued envelopes from the previous wire version. Register stable service UUIDs and schema versions. Use JSON for readable messages or CBOR for compact structured data. The transport and codec boundaries are independent of the DSL and SQLite.
+Go integrations use the `sdk` package with a `bus.Bus`. Python integrations can run `uv sync --project python --locked` and import `chains_automation`. Both SDKs support registration, atomic single- and multi-device observations, silent State seeding, and actions. An observation updates State at `service_id/device_id/attribute` before rules see it. One batch belongs to one service and one event type, with one State revision for all its devices. The wire protocol is version 3. Upgrade engines and publishers together. SQLite keeps values at existing registered IDs. Frigate starts its camera paths from new observations. Radicale discards any queued envelopes from the previous wire version. Register stable service UUIDs and schema versions. Use JSON for readable messages or CBOR for compact structured data. The transport and codec boundaries are independent of the DSL and SQLite.
 
 ## Verification
 
@@ -133,7 +139,7 @@ Replace the sample IEEE address and light name in the rule with values from your
 
 Use `mqtts://` for TLS and include percent-encoded credentials in the URL if required. Give the bridge permission to subscribe to its configured base topic and publish device commands below it. Keep Zigbee2MQTT configured to publish JSON reports.
 
-Retained device reports seed state without starting rules. Live button actions carry the original action name under `data.action`. Actions support power and brightness on devices with writable capabilities. A `submitted` action result means the MQTT broker acknowledged a command. A later device report supplies the observed state. The authority dispatches local rules directly and mirrors events onto the Chains bus. Remote subscribers can miss live events if the publication queue overflows or the system bus is unavailable.
+Retained device reports seed state without starting rules. Live button actions carry the original action name under `data.action`. Power and percentage `dimlevel` are available on devices that advertise the corresponding setters. A `submitted` action result means the MQTT broker acknowledged a command. A later device report supplies the observed state. The authority dispatches local rules directly and mirrors events onto the Chains bus. Remote subscribers can miss live events if the publication queue overflows or the system bus is unavailable.
 
 ## Author a Python service
 

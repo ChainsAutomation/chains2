@@ -21,6 +21,7 @@ type config struct {
 	Bus                      string                       `json:"bus"`
 	Namespace                string                       `json:"namespace"`
 	Database                 string                       `json:"database"`
+	WebRulesDir              string                       `json:"web_rules_dir"`
 	Rules                    string                       `json:"rules"`
 	Encoding                 string                       `json:"encoding"`
 	Listen                   string                       `json:"listen"`
@@ -53,10 +54,10 @@ func readConfig(args []string) (config, error) {
 		Database:    filepath.Join(xdg("XDG_STATE_HOME", ".local/state"), "chains", "state.sqlite"),
 		Rules:       filepath.Join(xdg("XDG_CONFIG_HOME", ".config"), "chains", "rules.chains"),
 		SensorTopic: "sensors/bathroom/humidity",
-		Sensor:      sensorMapping{Device: "bathroom-sensor", Class: "sensor", Event: "humidity.reported", Attribute: "humidity", Field: "value", Format: "number", Schema: json.RawMessage(numericSchema)}}
+		Sensor:      sensorMapping{Device: "bathroom-sensor", Event: "humidity.reported", Attribute: "humidity", Field: "value", Format: "number", Schema: json.RawMessage(numericSchema)}}
 	f := flag.NewFlagSet("chains", flag.ContinueOnError)
 	path := f.String("config", "", "configuration file")
-	fields := map[string]*string{"z2m-mqtt-url": &c.Z2M.MQTTURL, "z2m-base-topic": &c.Z2M.BaseTopic, "z2m-service-id": &c.Z2M.ServiceID, "z2m-service-name": &c.Z2M.ServiceName, "z2m-ca-file": &c.Z2M.CAFile, "id": &c.ID, "authority": &c.Authority, "bus": &c.Bus, "namespace": &c.Namespace, "database": &c.Database, "rules": &c.Rules, "encoding": &c.Encoding, "listen": &c.Listen, "token": &c.Token, "timezone": &c.Timezone, "week": &c.Week, "sensor-broker": &c.SensorBroker, "sensor-topic": &c.SensorTopic}
+	fields := map[string]*string{"z2m-mqtt-url": &c.Z2M.MQTTURL, "z2m-base-topic": &c.Z2M.BaseTopic, "z2m-service-id": &c.Z2M.ServiceID, "z2m-service-name": &c.Z2M.ServiceName, "z2m-ca-file": &c.Z2M.CAFile, "id": &c.ID, "authority": &c.Authority, "bus": &c.Bus, "namespace": &c.Namespace, "database": &c.Database, "web-rules-dir": &c.WebRulesDir, "rules": &c.Rules, "encoding": &c.Encoding, "listen": &c.Listen, "token": &c.Token, "timezone": &c.Timezone, "week": &c.Week, "sensor-broker": &c.SensorBroker, "sensor-topic": &c.SensorTopic}
 	var cli = map[string]*string{}
 	for name, ptr := range fields {
 		cli[name] = f.String(name, *ptr, name)

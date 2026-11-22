@@ -37,6 +37,19 @@ func openDB(path string) (*database, error) {
 		d.close()
 		return nil, err
 	}
+	version, err := d.statement("PRAGMA user_version")
+	if err != nil {
+		d.close()
+		return nil, err
+	}
+	needsMigration := C.sqlite3_step(version) == C.SQLITE_ROW && C.sqlite3_column_int(version, 0) < 3
+	C.sqlite3_finalize(version)
+	if needsMigration {
+		if err := d.exec("BEGIN IMMEDIATE; DELETE FROM entries WHERE kind='service'; PRAGMA user_version=3; COMMIT;"); err != nil {
+			d.close()
+			return nil, err
+		}
+	}
 	return d, nil
 }
 
@@ -102,8 +115,13 @@ func (d *database) commit(id string, u Update) (bool, error) {
 	if C.sqlite3_changes(d.handle) == 0 {
 		return false, nil
 	}
-	if u.Service != nil {
-		if err := d.put("service", u.Service.UUID, "", u.Service); err != nil {
+	if u.registration != nil {
+		if err := d.put("service", u.registration.UUID, "", u.registration); err != nil {
+			return false, err
+		}
+	}
+	if u.placement != nil {
+		if err := d.put("placement", u.placement.address, "", u.placement.override); err != nil {
 			return false, err
 		}
 	}
@@ -125,7 +143,7 @@ func (d *database) commit(id string, u Update) (bool, error) {
 	return true, d.exec("COMMIT")
 }
 
-func (d *database) load(snapshot *Snapshot) error {
+func (d *database) load(snapshot *Snapshot, placements map[string]PlacementOverride) error {
 	s, err := d.statement("SELECT kind,owner,name,value FROM entries")
 	if err != nil {
 		return err
@@ -137,6 +155,14 @@ func (d *database) load(snapshot *Snapshot) error {
 			return nil
 		case C.SQLITE_ROW:
 			col := func(i int) string { return C.GoString((*C.char)(unsafe.Pointer(C.sqlite3_column_text(s, C.int(i))))) }
+			if col(0) == "placement" {
+				var saved PlacementOverride
+				if err := json.Unmarshal([]byte(col(3)), &saved); err != nil {
+					return err
+				}
+				placements[col(1)] = saved
+				continue
+			}
 			if err := loadEntry(snapshot, col(0), col(1), col(2), col(3)); err != nil {
 				return err
 			}

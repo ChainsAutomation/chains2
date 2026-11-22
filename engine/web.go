@@ -162,7 +162,7 @@ func (e *Engine) WebHTTP(token string, mappings map[string]HTTPSource, assets fs
 		api.ServeHTTP(w, r)
 	}))
 	mux.Handle("GET /ui/assets/", http.StripPrefix("/ui/", http.FileServerFS(assets)))
-	for _, route := range []string{"/ui/{$}", "/ui/state", "/ui/watch", "/ui/send", "/ui/trace"} {
+	for _, route := range []string{"/ui/{$}", "/ui/state", "/ui/watch", "/ui/send", "/ui/trace", "/ui/rules", "/ui/devices"} {
 		mux.HandleFunc("GET "+route, func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Cache-Control", "no-store")
 			w.Header().Set("Content-Security-Policy", "default-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")

@@ -11,7 +11,7 @@ from typing import Any, Callable, Protocol
 from uuid import uuid4
 
 
-VERSION = 2
+VERSION = 3
 MAX_PAYLOAD = 1 << 20
 IDENTIFIER = re.compile(r"[a-zA-Z0-9_.:-]{1,128}")
 CBOR_MARKER = b"\xd9\xd9\xf7"

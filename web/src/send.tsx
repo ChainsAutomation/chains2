@@ -87,8 +87,8 @@ export function SendView(props: {
       case "service_id": return services.map(s => ({ value: s.uuid, label: s.name }));
       case "service_type": return options(services.map(s => s.service_type));
       case "device_id": return options(devices.map(d => d.id));
-      case "device_class": return options(devices.map(d => d.class));
-      case "attribute": return options(devices.filter(d => !item?.device_id || d.id === item.device_id).flatMap(d => d.attributes ?? []));
+      case "device_class": return options(devices.flatMap(d => d.classes));
+      case "attribute": return options(devices.filter(d => !item?.device_id || d.id === item.device_id).flatMap(d => Object.keys(d.attributes ?? {})));
       default: return [];
     }
   }

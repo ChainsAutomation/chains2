@@ -227,7 +227,7 @@ func validateExpr(x *Expression, names map[string]bool, shorthand, pure bool) er
 }
 
 func bareArgument(function, key string) bool {
-	return function == "Event" || ((function == "Action" || function == "Device" || function == "Devices") && (key == "service_name" || key == "device_name" || key == "service_id" || key == "device_id"))
+	return function == "Event" || ((function == "Action" || function == "Set" || function == "Device" || function == "Devices") && (key == "service_name" || key == "device_name" || key == "service_id" || key == "device_id"))
 }
 
 func validateCall(x *Expression, names map[string]bool, pure, opening bool) error {
@@ -258,6 +258,21 @@ func validateCall(x *Expression, names map[string]bool, pure, opening bool) erro
 		if positional != 0 {
 			return bad("named arguments")
 		}
+	case "Set":
+		if positional != 0 || !keys["attribute"] || !keys["value"] {
+			return bad("a target, attribute=, and value=")
+		}
+		for key := range keys {
+			switch key {
+			case "device", "service_name", "device_name", "attribute", "value", "wait":
+			default:
+				return bad("a target, attribute=, value=, and optional wait=")
+			}
+		}
+		if keys["device"] == (keys["service_name"] || keys["device_name"]) ||
+			(!keys["device"] && (!keys["service_name"] || !keys["device_name"])) {
+			return bad("one target")
+		}
 	case "Action":
 		if positional != 1 {
 			return bad("an action name followed by named arguments")
@@ -275,9 +290,9 @@ func validateCall(x *Expression, names map[string]bool, pure, opening bool) erro
 		}
 		for key := range keys {
 			switch key {
-			case "service_id", "service_name", "device_id", "device_name":
+			case "service_id", "service_name", "device_id", "device_name", "device_class", "location", "tag", "tags":
 			default:
-				return bad("service_id, service_name, device_id or device_name")
+				return bad("device, service, class, location or tag selectors")
 			}
 		}
 
@@ -374,6 +389,8 @@ func formatExpr(x *Expression) string {
 			return "null"
 		case string:
 			return strconv.Quote(v)
+		case float64:
+			return strconv.FormatFloat(v, 'f', -1, 64)
 		default:
 			return fmt.Sprint(v)
 		}

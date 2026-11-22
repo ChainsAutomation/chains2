@@ -15,7 +15,7 @@ images:
 
 For a disposable [kind cluster](https://kind.sigs.k8s.io/docs/user/quick-start/#loading-an-image-into-your-cluster), load the locally built images with `kind load docker-image chains:dev chains-python:dev --name YOUR_CLUSTER`.
 
-The authority claims 1 GiB on the default StorageClass. If your cluster has no default, set `storageClassName` on the PVC to a suitable class. The volume must support SQLite's file-locking semantics and allow the authority to write as UID and GID 10001. Keep one authority replica. Its `Recreate` deployment replaces the old Pod before starting its replacement.
+The authority claims 1 GiB on the default StorageClass. If your cluster has no default, set `storageClassName` on the PVC to a suitable class. The volume must support SQLite's file-locking semantics and allow the authority to write as UID and GID 10001. Keep one authority replica. Its `Recreate` deployment replaces the old Pod before starting its replacement. The same claim stores published web rules at `/var/lib/chains/state.sqlite.rules`. The ConfigMap remains the source of deployment-managed rules.
 
 ## Start the demo
 

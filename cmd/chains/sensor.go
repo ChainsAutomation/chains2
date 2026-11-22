@@ -15,7 +15,6 @@ import (
 
 type sensorMapping struct {
 	Device    string          `json:"device"`
-	Class     string          `json:"class"`
 	Event     string          `json:"event"`
 	Attribute string          `json:"attribute"`
 	Field     string          `json:"field"`
@@ -25,7 +24,7 @@ type sensorMapping struct {
 }
 
 func (m *sensorMapping) validate() error {
-	for _, value := range []string{m.Device, m.Class, m.Event, m.Attribute, m.Field} {
+	for _, value := range []string{m.Device, m.Event, m.Attribute, m.Field} {
 		if !chains.Segment(value) {
 			return fmt.Errorf("invalid sensor mapping field %q", value)
 		}
@@ -83,4 +82,14 @@ func parseSensorValue(format string, raw []byte) (any, error) {
 		return value, err
 	}
 	return nil, errors.New("unsupported sensor format")
+}
+
+func (m sensorMapping) attributes() map[string]chains.Attribute {
+	var description struct{ Properties map[string]json.RawMessage }
+	_ = json.Unmarshal(m.Schema, &description)
+	result := chains.Attributes(m.Attribute)
+	if raw := description.Properties[m.Field]; len(raw) > 0 {
+		result[m.Attribute] = chains.Attribute{Schema: raw}
+	}
+	return result
 }

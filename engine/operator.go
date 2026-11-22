@@ -271,6 +271,8 @@ func (e *Engine) operatorRoutes(mux *http.ServeMux, auth func(http.HandlerFunc) 
 	if e.operator == nil || e.operator.feed == nil {
 		return
 	}
+	e.ruleRoutes(mux, auth)
+	e.deviceRoutes(mux, auth)
 	mux.HandleFunc("GET "+operator.Base+"/state", auth(e.operatorState))
 	mux.HandleFunc("GET "+operator.Base+"/services", auth(func(w http.ResponseWriter, _ *http.Request) {
 		services := e.view.Services()
@@ -303,7 +305,7 @@ func (e *Engine) operatorRoutes(mux *http.ServeMux, auth func(http.HandlerFunc) 
 			if s, ok := e.view.Service(mapping.Source); ok {
 				raw := s.Events[mapping.Type][mapping.SchemaVersion]
 				d, known := device(s, mapping.Device)
-				profile.Ready = len(raw) > 0 && known && contains(d.Attributes, mapping.stateAttribute()) && e.ready.Load()
+				profile.Ready = len(raw) > 0 && known && hasAttribute(d, mapping.stateAttribute()) && e.ready.Load()
 				profile.Schema = raw
 				if mapping.Attribute != "" {
 					var object struct{ Properties map[string]json.RawMessage }
@@ -316,6 +318,7 @@ func (e *Engine) operatorRoutes(mux *http.ServeMux, auth func(http.HandlerFunc) 
 		sort.Slice(list, func(i, j int) bool { return list[i].Name < list[j].Name })
 		writeJSON(w, http.StatusOK, list)
 	}))
+	mux.HandleFunc("POST "+operator.Base+"/actions", auth(e.operatorSet))
 	mux.HandleFunc("POST "+operator.Base+"/events", auth(func(w http.ResponseWriter, r *http.Request) { e.operatorSend(w, r, mappings) }))
 	mux.HandleFunc("GET "+operator.Base+"/activity", auth(e.operatorWatch))
 }
@@ -350,7 +353,7 @@ func (e *Engine) operatorState(w http.ResponseWriter, r *http.Request) {
 				result.Rows = append(result.Rows, operator.StateRow{Kind: "device", Service: id, ServiceName: service.Name, Device: d.ID, DeviceName: d.Name})
 			}
 			for name, value := range s.Devices[id+"/"+d.ID] {
-				if attribute != "" && attribute != name {
+				if !hasAttribute(d, name) || attribute != "" && attribute != name {
 					continue
 				}
 				result.Rows = append(result.Rows, operator.StateRow{Kind: "attribute", Service: id, ServiceName: service.Name, Device: d.ID, DeviceName: d.Name, Attribute: name, Value: value.Value, Observed: &value.ObservedAt, Changed: &value.ChangedAt, Revision: value.Revision})

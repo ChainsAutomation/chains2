@@ -215,7 +215,11 @@ func (e *Engine) actLocal(ctx context.Context, m chains.Message) map[string]any 
 		e.mirror(out)
 	}
 	e.log.Debug("local action outcome", "action", m.ActionID, "status", result.Status)
-	return map[string]any{"status": result.Status, "error": result.Error, "action_id": m.ActionID}
+	response := map[string]any{"status": result.Status, "action_id": m.ActionID}
+	if result.Error != "" {
+		response["error"] = result.Error
+	}
+	return response
 }
 
 func (e *Engine) publishDerived(ctx context.Context, m chains.Message) error {

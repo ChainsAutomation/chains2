@@ -35,7 +35,7 @@ func main() {
     err = sdk.RunService(ctx, cfg, sdk.Definition{
         Service: chains.Service{
             ServiceType: "ping",
-            Devices: []chains.Device{{ID: "system", Name: "System", Class: "system", Attributes: []string{"last_ping"}}},
+            Devices: []chains.Device{{ID: "system", Name: "System", Attributes: chains.Attributes("last_ping")}},
             Events: map[string]map[string]json.RawMessage{
                 "ping": {"1": json.RawMessage(`{"type":"object"}`)},
             },
@@ -72,6 +72,12 @@ Initialize a settings struct with defaults before calling `LoadConfig`. Use `tom
 Workers, callbacks, and actions should honor their contexts. Heartbeats are independent of polling and action handlers. A service can inject a test transport with `Definition.OpenBus`.
 
 ## Actions and state
+
+Set `Device.Placement` to declare default location segments and tags. [Device placement](devices.md)
+
+See the [event and State guide](events.md) for the shared wire format, batch constraints, and rule matching.
+
+Declare typed attributes with `map[string]chains.Attribute` and optional setters. Use `chains.Attributes(...)` for open JSON schemas. [Device contracts](actions.md)
 
 Declare schemas in `Definition.Service.Actions`, list supported action names on each device, and supply handlers under `Definition.Actions[actionName][schemaVersion]`. An `ActionHandler` receives the context, runtime, request envelope, and parsed action. Its return value goes into the action outcome. Declare idempotence through `Service.IdempotentActions` when retrying the action is safe.
 

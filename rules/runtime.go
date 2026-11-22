@@ -9,6 +9,7 @@ import (
 	"maps"
 	"math"
 	"reflect"
+	"slices"
 	"sync"
 	"time"
 
@@ -25,9 +26,11 @@ func (d DeviceRef) address() string { return d.ServiceID + "/" + d.DeviceID }
 
 type Host interface {
 	ResolveDevice(serviceName, deviceName string) (DeviceRef, error)
-	ResolveDevices(selectors map[string]string) []DeviceRef
+	ResolveDevices(selectors map[string]string, placement chains.PlacementFilter) []DeviceRef
 	State(address string) map[string]any
 	Act(context.Context, chains.Message, DeviceRef, string, string, map[string]any) (map[string]any, error)
+	SendAction(context.Context, chains.Message, DeviceRef, string, string, map[string]any) (map[string]any, error)
+	ResolveSetter(DeviceRef, string, any) (chains.Setter, map[string]any, error)
 }
 
 type Trace struct {
@@ -46,24 +49,30 @@ type Runtime struct {
 	mu       sync.Mutex
 	wg       sync.WaitGroup
 	closed   bool
+	active   map[string]*opening
 	openings map[string][]*opening
 	waits    map[string]map[*wait]bool
 }
 
 type opening struct {
-	rule    Rule
-	pattern map[string]any
-	running int
-	initial map[string]any
-	binding string
-	body    []Statement
-	trigger string
-	args    []any
+	placement chains.PlacementFilter
+	ctx       context.Context
+	cancel    context.CancelFunc
+	rule      Rule
+	pattern   map[string]any
+	running   int
+	initial   map[string]any
+	binding   string
+	body      []Statement
+	trigger   string
+	args      []any
 }
 
 type wait struct {
-	pattern map[string]any
-	event   chan matchedEvent
+	placement chains.PlacementFilter
+	ctx       context.Context
+	pattern   map[string]any
+	event     chan matchedEvent
 }
 type execution struct {
 	runtime  *Runtime
@@ -82,57 +91,99 @@ func New(ctx context.Context, host Host, calendar Calendar, log *slog.Logger, ru
 	if len(traces) > 0 {
 		r.trace = traces[0]
 	}
-	var schedules []*opening
+	r.active = map[string]*opening{}
+	var prepared []*Prepared
 	seen := map[string]bool{}
-	startupError := func(rule Rule, err error) (*Runtime, error) {
-		cancel()
-		return nil, fmt.Errorf("rule %q: %w", rule.Name, err)
-	}
 	for _, rule := range rules {
-		if err := Validate(rule); err != nil {
-			return startupError(rule, err)
-		}
 		if seen[rule.Name] {
-			return startupError(rule, errors.New("duplicate rule name"))
+			cancel()
+			return nil, fmt.Errorf("duplicate rule name %q", rule.Name)
 		}
 		seen[rule.Name] = true
-		if rule.Concurrency == 0 {
-			rule.Concurrency = 1
-		}
-		if rule.Timeout == 0 {
-			rule.Timeout = 5 * time.Minute
-		}
-		start := openingIndex(rule)
-		e := &execution{runtime: r, env: map[string]any{}, budget: 10000, ctx: ctx}
-		if err := e.block(rule.Body[:start]); err != nil {
-			return startupError(rule, err)
-		}
-		first := rule.Body[start]
-		o := &opening{rule: rule, initial: e.env, binding: first.Name, body: rule.Body[start+1:], trigger: first.Value.Text}
-		args, params, err := e.arguments(first.Value)
+		entry, err := r.Prepare(rule)
 		if err != nil {
-			return startupError(rule, err)
+			cancel()
+			return nil, fmt.Errorf("rule %q: %w", rule.Name, err)
 		}
-		if o.trigger == "Event" {
-			o.pattern = params
-			key, _ := params["type"].(string)
-			r.openings[key] = append(r.openings[key], o)
-		} else {
-			o.args = calendarArgs(args, params)
-			if _, err = r.calendar.next(o.trigger, o.args, time.Now()); err != nil {
-				return startupError(rule, err)
-			}
-			schedules = append(schedules, o)
+		prepared = append(prepared, entry)
+	}
+	r.Apply(nil, prepared)
+	return r, nil
+}
+
+// Prepared is a validated rule that has yet to be activated.
+type Prepared struct{ entry *opening }
+
+func (r *Runtime) Prepare(rule Rule) (*Prepared, error) {
+	if err := Validate(rule); err != nil {
+		return nil, err
+	}
+	if rule.Concurrency == 0 {
+		rule.Concurrency = 1
+	}
+	if rule.Timeout == 0 {
+		rule.Timeout = 5 * time.Minute
+	}
+	start := openingIndex(rule)
+	e := &execution{runtime: r, env: map[string]any{}, budget: 10000, ctx: r.ctx}
+	if err := e.block(rule.Body[:start]); err != nil {
+		return nil, err
+	}
+	first := rule.Body[start]
+	o := &opening{rule: rule, initial: e.env, binding: first.Name, body: rule.Body[start+1:], trigger: first.Value.Text}
+	args, params, err := e.arguments(first.Value)
+	if err != nil {
+		return nil, err
+	}
+	if o.trigger == "Event" {
+		o.placement, err = extractPlacement(params)
+		if err != nil {
+			return nil, invalid(first.At, "%v", err)
+		}
+		o.pattern = params
+	} else {
+		o.args = calendarArgs(args, params)
+		if _, err = r.calendar.next(o.trigger, o.args, time.Now()); err != nil {
+			return nil, invalid(first.At, "%v", err)
 		}
 	}
-	for _, o := range schedules {
-		if calendar.Disabled {
+	return &Prepared{o}, nil
+}
+
+// Apply installs prepared rules and cancels the rules they replace.
+func (r *Runtime) Apply(remove []string, add []*Prepared) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return
+	}
+	for _, name := range remove {
+		o := r.active[name]
+		if o == nil {
 			continue
 		}
-		r.wg.Add(1)
-		go r.schedule(o)
+		o.cancel()
+		delete(r.active, name)
+		if o.trigger == "Event" {
+			key, _ := o.pattern["type"].(string)
+			r.openings[key] = slices.DeleteFunc(r.openings[key], func(item *opening) bool { return item == o })
+			if len(r.openings[key]) == 0 {
+				delete(r.openings, key)
+			}
+		}
 	}
-	return r, nil
+	for _, item := range add {
+		o := item.entry
+		o.ctx, o.cancel = context.WithCancel(r.ctx)
+		r.active[o.rule.Name] = o
+		if o.trigger == "Event" {
+			key, _ := o.pattern["type"].(string)
+			r.openings[key] = append(r.openings[key], o)
+		} else if !r.calendar.Disabled {
+			r.wg.Add(1)
+			go r.schedule(o)
+		}
+	}
 }
 
 func (r *Runtime) Close() {
@@ -165,7 +216,7 @@ func (r *Runtime) Dispatch(m chains.Message) {
 		patches = append(patches, map[string]any{
 			"device":    DeviceRef{m.ServiceID, observation.DeviceID},
 			"device_id": observation.DeviceID, "device_name": observation.DeviceName,
-			"device_class": observation.DeviceClass, "values": values, "data": data,
+			"device_classes": observation.DeviceClasses, "location": observation.Location, "tags": observation.Tags, "values": values, "data": data,
 		})
 	}
 	r.mu.Lock()
@@ -178,7 +229,11 @@ func (r *Runtime) Dispatch(m chains.Message) {
 			continue
 		}
 		for w := range r.waits[key] {
-			if matched := observationMatch(w.pattern, fields, patches); matched != nil {
+			if w.ctx.Err() != nil {
+				delete(r.waits[key], w)
+				continue
+			}
+			if matched := observationMatch(w.pattern, w.placement, fields, patches); matched != nil {
 				w.event <- matchedEvent{m, matched}
 				delete(r.waits[key], w)
 			}
@@ -187,16 +242,16 @@ func (r *Runtime) Dispatch(m chains.Message) {
 			delete(r.waits, key)
 		}
 		for _, o := range r.openings[key] {
-			if matched := observationMatch(o.pattern, fields, patches); matched != nil {
+			if matched := observationMatch(o.pattern, o.placement, fields, patches); matched != nil {
 				r.start(o, m, matched)
 			}
 		}
 	}
 }
 
-func observationMatch(pattern, fields map[string]any, patches []map[string]any) map[string]any {
+func observationMatch(pattern map[string]any, placement chains.PlacementFilter, fields map[string]any, patches []map[string]any) map[string]any {
 	if len(patches) == 0 {
-		if matches(pattern, fields) {
+		if matchesPlacement(placement, fields) && matches(pattern, fields) {
 			return fields
 		}
 		return nil
@@ -210,7 +265,7 @@ func observationMatch(pattern, fields map[string]any, patches []map[string]any) 
 	for _, patch := range patches {
 		candidate := maps.Clone(fields)
 		maps.Copy(candidate, patch)
-		if !matches(base, candidate) {
+		if !matchesPlacement(placement, patch) || !matches(base, candidate) {
 			continue
 		}
 		if hasAttribute || hasValue {
@@ -243,8 +298,42 @@ func observationMatch(pattern, fields map[string]any, patches []map[string]any) 
 	return result
 }
 
+func extractPlacement(selectors map[string]any) (chains.PlacementFilter, error) {
+	filter, err := chains.ParsePlacementFilter(selectors)
+	for _, field := range []string{"location", "tags", "tag"} {
+		delete(selectors, field)
+	}
+	return filter, err
+}
+
+func matchesPlacement(filter chains.PlacementFilter, fields map[string]any) bool {
+	if !filter.Active() {
+		return true
+	}
+	location, _ := chains.StringParts(fields["location"])
+	tags, _ := chains.StringParts(fields["tags"])
+	return filter.Match(chains.Placement{Location: location, Tags: tags})
+}
+
 func matches(pattern, fields map[string]any) bool {
 	for k, v := range pattern {
+		if k == "device_class" {
+			class, ok := v.(string)
+			if !ok {
+				return false
+			}
+			found := false
+			switch classes := fields["device_classes"].(type) {
+			case []string:
+				found = slices.Contains(classes, class)
+			case []any:
+				found = slices.Contains(classes, any(class))
+			}
+			if !found {
+				return false
+			}
+			continue
+		}
 		candidate, ok := fields[k]
 		if !ok {
 			body, _ := fields["data"].(map[string]any)
@@ -264,7 +353,7 @@ func (r *Runtime) start(o *opening, m chains.Message, fields map[string]any) {
 		return
 	}
 	o.running++
-	e := &execution{runtime: r, rule: o.rule, env: maps.Clone(o.initial), ctx: r.ctx}
+	e := &execution{runtime: r, rule: o.rule, env: maps.Clone(o.initial), ctx: o.ctx}
 	if r.trace != nil {
 		e.runID = chains.ID()
 	}
@@ -329,13 +418,13 @@ func (r *Runtime) schedule(o *opening) {
 		}
 		timer := time.NewTimer(time.Until(next))
 		select {
-		case <-r.ctx.Done():
+		case <-o.ctx.Done():
 			timer.Stop()
 			return
 		case <-timer.C:
 			m, _ := chains.New("time.matched", "scheduler", map[string]any{"time": next})
 			r.mu.Lock()
-			if !r.closed {
+			if !r.closed && o.ctx.Err() == nil {
 				r.start(o, m, eventFields(m))
 			}
 			r.mu.Unlock()
@@ -387,9 +476,17 @@ func (e *execution) until() (context.Context, context.CancelFunc) {
 
 func (e *execution) await(pattern map[string]any) (any, error) {
 	r := e.runtime
-	w := &wait{pattern: pattern, event: make(chan matchedEvent, 1)}
+	placement, err := extractPlacement(pattern)
+	if err != nil {
+		return nil, err
+	}
+	w := &wait{placement: placement, ctx: e.ctx, pattern: pattern, event: make(chan matchedEvent, 1)}
 	key, _ := pattern["type"].(string)
 	r.mu.Lock()
+	if err := e.ctx.Err(); err != nil {
+		r.mu.Unlock()
+		return nil, err
+	}
 	if r.waits[key] == nil {
 		r.waits[key] = map[*wait]bool{}
 	}
@@ -477,36 +574,61 @@ func (e *execution) call(x *Expression) (any, error) {
 	switch x.Text {
 	case "Event":
 		return e.await(named)
-	case "Action":
-		action, ok := args[0].(string)
-		if !ok || !chains.Segment(action) {
-			return nil, errors.New("Action needs a valid action name")
-		}
+	case "Action", "Set":
 		var ref DeviceRef
-		if device, found := named["device"]; found {
-			ref, err = deviceReference(device)
+		if target, found := named["device"]; found {
+			ref, err = deviceReference(target)
 		} else {
 			ref, err = e.resolve(named)
 		}
 		if err != nil {
 			return nil, err
 		}
-		version := "1"
-		if value, found := named["schema_version"]; found {
-			if version, ok = value.(string); !ok || !chains.Segment(version) {
-				return nil, errors.New("invalid action schema version")
+		act := e.runtime.host.Act
+		if wait, ok := named["wait"]; ok {
+			mode, _ := wait.(string)
+			switch mode {
+			case "outcome":
+			case "sent":
+				act = e.runtime.host.SendAction
+			default:
+				return nil, errors.New("wait must be outcome or sent")
 			}
 		}
-		delete(named, "device")
-		delete(named, "service_name")
-		delete(named, "device_name")
-		delete(named, "schema_version")
+		version := "1"
+		var action string
+		if x.Text == "Set" {
+			attribute, ok := named["attribute"].(string)
+			if !ok || !chains.Segment(attribute) {
+				return nil, errors.New("Set needs a valid attribute name")
+			}
+			setter, values, err := e.runtime.host.ResolveSetter(ref, attribute, named["value"])
+			if err != nil {
+				return nil, err
+			}
+			action, version, named = setter.Action, setter.Version, values
+		} else {
+			var ok bool
+			action, ok = args[0].(string)
+			if !ok || !chains.Segment(action) {
+				return nil, errors.New("Action needs a valid action name")
+			}
+			if v, found := named["schema_version"]; found {
+				version, ok = v.(string)
+				if !ok || !chains.Segment(version) {
+					return nil, errors.New("invalid action schema version")
+				}
+			}
+			for _, key := range []string{"device", "service_name", "device_name", "schema_version", "wait"} {
+				delete(named, key)
+			}
+		}
 		ctx, cancel := e.until()
 		defer cancel()
 		if err = ctx.Err(); err != nil {
 			return nil, err
 		}
-		result, err := e.runtime.host.Act(ctx, e.last, ref, action, version, named)
+		result, err := act(ctx, e.last, ref, action, version, named)
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
@@ -519,6 +641,10 @@ func (e *execution) call(x *Expression) (any, error) {
 		e.runtime.log.Debug("rule read state", "rule", e.rule.Name, "event", e.last.ID, "address", ref.address())
 		return e.runtime.host.State(ref.address()), nil
 	case "Devices":
+		placement, err := extractPlacement(named)
+		if err != nil {
+			return nil, err
+		}
 		selectors := make(map[string]string, len(named))
 		for key, value := range named {
 			name, ok := value.(string)
@@ -527,7 +653,7 @@ func (e *execution) call(x *Expression) (any, error) {
 			}
 			selectors[key] = name
 		}
-		devices := e.runtime.host.ResolveDevices(selectors)
+		devices := e.runtime.host.ResolveDevices(selectors, placement)
 		result := make([]any, len(devices))
 		for i, device := range devices {
 			result[i] = device

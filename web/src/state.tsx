@@ -1,8 +1,9 @@
 import { createMemo, createSignal, For, onCleanup, Show } from "solid-js";
-import { type Service, type Snapshot, type StateRow } from "./api";
-import { Button, Empty, formatTime, Heading, jsonText, options, Picker } from "./components";
+import { attributeLabel, type Service, type SetRequest, type SetReceipt, type Snapshot, type StateRow } from "./api";
+import { AttributeControl } from "./attribute-control";
+import { Button, Empty, formatTime, Heading, jsonText, Picker } from "./components";
 
-export function StateView(props: { services: Service[]; load: (signal: AbortSignal) => Promise<Snapshot>; refreshCatalog: () => void }) {
+export function StateView(props: { services: Service[]; load: (signal: AbortSignal) => Promise<Snapshot>; refreshCatalog: () => void; setAttribute: (request: SetRequest) => Promise<SetReceipt> }) {
   const [snapshot, setSnapshot] = createSignal<Snapshot>();
   const [problem, setProblem] = createSignal("");
   const [loading, setLoading] = createSignal(false);
@@ -32,7 +33,7 @@ export function StateView(props: { services: Service[]; load: (signal: AbortSign
   const rows = createMemo(() => {
     const result = new Map<string, StateRow>();
     for (const row of snapshot()?.rows ?? []) if (row.kind === "attribute") result.set(key(row), row);
-    for (const svc of props.services) for (const dev of svc.devices ?? []) for (const attr of dev.attributes ?? []) {
+    for (const svc of props.services) for (const dev of svc.devices ?? []) for (const attr of Object.keys(dev.attributes ?? {})) {
       const row = { kind: "attribute", service_id: svc.uuid, service_name: svc.name, device_id: dev.id, device_name: dev.name, attribute: attr };
       if (!result.has(key(row))) result.set(key(row), row);
     }
@@ -43,6 +44,8 @@ export function StateView(props: { services: Service[]; load: (signal: AbortSign
     ).sort((a, b) => key(a).localeCompare(key(b)));
   });
   const selected = createMemo(() => rows().find(row => key(row) === active()));
+  const metadata = (row: StateRow) => props.services.find(s => s.uuid === row.service_id)?.devices
+    ?.find(d => d.id === row.device_id)?.attributes?.[row.attribute ?? ""];
   function select(s: string, d = "") { setService(s); setDevice(d); setAttribute(""); setActive(""); }
   function fold(id: string) {
     const next = new Set(closed());
@@ -57,7 +60,7 @@ export function StateView(props: { services: Service[]; load: (signal: AbortSign
     <section class="filters panel" aria-label="State filters">
       <Picker id="state-service" label="Service" value={service()} choices={props.services.map(s => ({ value: s.uuid, label: s.name }))} onValue={select} />
       <Picker id="state-device" label="Device" value={device()} disabled={!service()} choices={(serviceRecord()?.devices ?? []).map(d => ({ value: d.id, label: d.name || d.id }))} onValue={value => select(service(), value)} />
-      <Picker id="state-attribute" label="Attribute" value={attribute()} disabled={!device()} choices={options(deviceRecord()?.attributes ?? [])} onValue={setAttribute} />
+      <Picker id="state-attribute" label="Attribute" value={attribute()} disabled={!device()} choices={Object.entries(deviceRecord()?.attributes ?? {}).map(([id, descriptor]) => ({ value: id, label: attributeLabel(id, descriptor) }))} onValue={setAttribute} />
       <label class="field"><span>Search</span><input type="search" value={search()} placeholder="Names, IDs, or values" onInput={e => setSearch(e.currentTarget.value)} /></label>
     </section>
     <Show when={problem()}><p class="notice" role="status">{problem()}</p></Show>
@@ -78,10 +81,11 @@ export function StateView(props: { services: Service[]; load: (signal: AbortSign
       </aside>
       <section class="panel data-panel">
         <div class="panel-title"><h2>{deviceRecord()?.name || serviceRecord()?.name || "Attributes"}</h2><span class="subtle">{rows().length} attributes</span></div>
+        <Show when={deviceRecord()?.description ?? serviceRecord()?.description}>{description => <p class="state-description">{description()}</p>}</Show>
         <Show when={rows().length} fallback={<Empty title={loading() && !snapshot() ? "Loading state" : "No matching attributes"}>Try a different service or filter.</Empty>}>
           <div class="table-scroll"><table><thead><tr><th>Attribute</th><th>Value</th><th>Changed</th></tr></thead><tbody>
             <For each={rows()}>{row => <tr class={active() === key(row) ? "chosen" : ""}>
-              <td><button class="row-link" aria-pressed={active() === key(row) ? "true" : "false"} onClick={() => setActive(key(row))}>{row.attribute}</button>
+              <td><button class="row-link" aria-pressed={active() === key(row) ? "true" : "false"} onClick={() => setActive(key(row))}>{attributeLabel(row.attribute ?? "",metadata(row))}</button>
                 <small>{row.service_name || row.service_id} / {row.device_name || row.device_id}</small></td>
               <td><span class="sample mono" title={jsonText(row.value, false)}>{row.value === undefined ? "Unreported" : jsonText(row.value, false)}</span></td>
               <td class="nowrap">{formatTime(row.changed_at)}</td>
@@ -89,8 +93,14 @@ export function StateView(props: { services: Service[]; load: (signal: AbortSign
           </tbody></table></div>
         </Show>
         <Show when={selected()}>{item => <div class="state-detail">
-          <div class="panel-title"><h2>{item().attribute}</h2><button class="quiet" onClick={() => setActive("")}>Close</button></div>
-          <pre>{item().value === undefined ? "No reported value" : jsonText(item().value)}</pre>
+          <div class="panel-title"><h2>{attributeLabel(item().attribute ?? "", metadata(item()))}</h2><button class="quiet" onClick={() => setActive("")}>Close</button></div>
+          <Show when={metadata(item())?.description}><p>{metadata(item())?.description}</p></Show>
+          <pre>{item().value === undefined ? "No reported value" : jsonText(item().value)}{metadata(item())?.unit ? " " + metadata(item())?.unit : ""}</pre>
+          <Show when={metadata(item())?.setter && metadata(item())}>{descriptor =>
+            <Show when={key(item())} keyed>{_ => <AttributeControl descriptor={descriptor()} service={item().service_id}
+              device={item().device_id ?? ""} name={item().attribute ?? ""} value={item().value} revision={item().revision}
+              send={props.setAttribute} refresh={() => void refresh()} />}</Show>
+          }</Show>
           <dl><dt>Changed</dt><dd>{formatTime(item().changed_at)}</dd><dt>Observed</dt><dd>{formatTime(item().observed_at)}</dd>
             <dt>Revision</dt><dd>{item().revision ?? "—"}</dd></dl>
         </div>}</Show>

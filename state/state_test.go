@@ -15,6 +15,10 @@ func TestReportAndRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	registration := chains.Service{UUID: "sensor", Name: "Sensor", ServiceType: "sensor", Devices: []chains.Device{{ID: "one", Attributes: chains.Attributes("value")}}}
+	if _, err := a.Register(chains.Message{Source: "sensor", ID: "register"}, registration); err != nil {
+		t.Fatal(err)
+	}
 	now := time.Now().UTC()
 	report := func(id string, observed time.Time, value string) (Update, []Change) {
 		m := chains.Message{ID: id, Source: "sensor", DeviceID: "one", ObservedAt: observed}
@@ -68,5 +72,51 @@ func TestResolveDevice(t *testing.T) {
 	view.Replace(s)
 	if _, _, err := view.ResolveDevice("LEDPanel", "panel0"); err == nil {
 		t.Fatal("ambiguous resolution succeeded")
+	}
+}
+
+func TestUpgradePreservesReportedLeaves(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.sqlite")
+	db, err := openDB(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := json.RawMessage(`{"uuid":"legacy","name":"Legacy","service_type":"sensor","devices":[{"id":"meter","class":"sensor","attributes":["watts"]}]}`)
+	stamp := time.Now().UTC()
+	leaf := Attribute{Value: json.RawMessage("18"), ObservedAt: stamp, ChangedAt: stamp, Revision: 4}
+	if err := db.put("service", "legacy", "", old); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.put("attribute", "legacy/meter", "watts", leaf); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.put("revision", "", "", 4); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.exec("PRAGMA user_version=0"); err != nil {
+		t.Fatal(err)
+	}
+	db.close()
+	a, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	if _, found := a.Service("legacy"); found {
+		t.Fatal("old service description is active")
+	}
+	s := chains.Service{UUID: "legacy", Name: "Legacy", ServiceType: "sensor", Devices: []chains.Device{
+		{ID: "meter", Attributes: chains.Attributes("watts")},
+	}}
+	if _, err := a.Register(chains.Message{Source: "legacy", ID: "registration"}, s); err != nil {
+		t.Fatal(err)
+	}
+	got, found := a.Query("legacy", "meter", "watts")
+	if !found {
+		t.Fatal("re-registration lost the old reading")
+	}
+	value := got.(Attribute)
+	if value.Revision != 4 || !value.ObservedAt.Equal(stamp) || string(value.Value) != "18" {
+		t.Fatalf("unexpected restored reading: %+v", value)
 	}
 }

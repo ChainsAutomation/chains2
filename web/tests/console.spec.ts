@@ -92,3 +92,146 @@ test("resume cursor, gap, keyboard navigation, narrow layout and revoked session
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Operator sign-in" })).toBeVisible();
 });
+
+test("guided and DSL rules publish live, download, and import with conflicts", async ({ page }) => {
+  await login(page, "/ui/rules");
+  const catalog = page.getByRole("heading", { name: "Rule catalog" });
+  await expect(catalog).toBeVisible();
+  await expect(page.getByRole("button", { name: "manual", exact: true })).toBeVisible();
+  await expect(page.locator("#rule-action-0-service-choices option[value=sim-fan]")).toHaveCount(0);
+  await page.getByRole("button", { name: "New rule" }).click();
+  await page.getByLabel("Rule name").fill("Guided fixture");
+  await expect(page.locator("#rule-action-0-service-choices option[value=sim-fan]")).toHaveCount(1);
+  await page.getByLabel("Event type", { exact: true }).fill("manual.guided");
+  await page.getByLabel("Target service").fill("sim-fan");
+  await page.getByLabel("Target device").fill("fan");
+  await page.getByLabel("Action", { exact: true }).fill("set_power");
+  await page.getByRole("combobox", { name: "value *", exact: true }).selectOption("true");
+  await page.getByRole("button", { name: "Validate and preview" }).click();
+  await expect(page.getByText("Validated source", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Publish", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Guided fixture", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Guided fixture", exact: true }).click();
+  await expect(page.getByRole("combobox", { name: "Trigger", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Close editor" }).click();
+
+  const response = await page.evaluate(async () => fetch("/operator/v1/events", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "guided", data: {} }),
+  }).then(r => r.json()));
+  await expect.poll(async () => {
+    const trace = await page.request.get("/operator/v1/traces?correlation=" + response.id).then(r => r.json());
+    return trace.records.map((r: { type: string }) => r.type);
+  }).toContain("action.outcome");
+
+  await page.getByRole("button", { name: "New rule" }).click();
+  await page.getByRole("button", { name: "DSL editor" }).click();
+  await page.getByLabel("Rule name").fill("DSL fixture");
+  await page.getByLabel("Rule source").fill("Event(type=)\n");
+  await page.getByRole("button", { name: "Validate and preview" }).click();
+  await expect(page.getByRole("alert")).toContainText("Line 1");
+  await page.getByLabel("Rule source").fill('Event(type="manual.dsl")\nreturn\n');
+  await page.getByRole("button", { name: "Validate and preview" }).click();
+  await page.getByRole("button", { name: "Publish", exact: true }).click();
+  await expect(page.getByRole("button", { name: "DSL fixture", exact: true })).toBeVisible();
+
+  const download = page.waitForEvent("download");
+  await page.getByRole("link", { name: "Download All" }).click();
+  expect((await download).suggestedFilename()).toBe("chains-rules.zip");
+  await page.getByLabel("Import rules file").setInputFiles({
+    name: "Guided fixture.chains", mimeType: "text/plain", buffer: Buffer.from('Event(type="manual.imported")\nreturn\n'),
+  });
+  await expect(page.getByText("Name already in use")).toBeVisible();
+  await page.getByRole("combobox", { name: "Import choice", exact: true }).selectOption("rename");
+  await page.getByLabel("New name").fill("Imported fixture");
+  await page.getByRole("button", { name: "Publish import" }).click();
+  await expect(page.getByRole("button", { name: "Imported fixture", exact: true })).toBeVisible();
+});
+
+test("State controls follow schemas and wait for device reports", async ({ page }) => {
+  const service = "typed-controls-fixture";
+  const observed = (id: string, values: Record<string, boolean | number>) => send("observation.submitted", id, {
+    event_type: "device.observed", observations: [{ device_id: "lamp", values }],
+  }, "1");
+  function send(type: string, id: string, data: unknown, schemaVersion?: string) {
+    const message = { version: 3, source: service, type, id, observed_at: new Date().toISOString(), data, schema_version: schemaVersion };
+    execFileSync("mosquitto_pub", ["-p", process.env.CHAINS_WEB_TEST_MQTT_PORT ?? "18883", "-q", "1",
+      "-t", "web-fixture/msg/" + type + "/" + service + "/_", "-m", JSON.stringify(message)]);
+  }
+  function schema(value: unknown) { return { type: "object", required: ["value"], properties: { value } }; }
+  const power = { type: "boolean" }, dimlevel = { type: "integer", minimum: 0, maximum: 100 };
+  const setter = (type: unknown, action: string, label: string, unit?: string) =>
+    ({ schema: type, label, unit, setter: { action, schema_version: "1", argument: "value" } });
+  await login(page, "/ui/state");
+  send("service.registered", "typed-reg", {
+    uuid: service, name: "Test light", service_type: "fixture", events: {},
+    devices: [{ id: "lamp", name: "Lamp", classes: ["dimmer"], actions: ["power", "dim"],
+      attributes: { power: setter(power, "power", "Power"), dimlevel: setter(dimlevel, "dim", "Brightness", "%"),
+        temperature: { schema: { type: "number" }, unit: "°C" } } }],
+    actions: { power: { "1": schema(power) }, dim: { "1": schema(dimlevel) } },
+  });
+  await expect.poll(async () => {
+    const services = await page.request.get("/operator/v1/services").then(r => r.json());
+    return services.find((item: { uuid: string }) => item.uuid === service)?.devices?.[0]?.classes;
+  }).toEqual(["toggle", "light", "dimmer"]);
+  observed("typed-initial", { power: false, dimlevel: 30, temperature: 22 });
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await page.getByRole("button", { name: "Power", exact: true }).click();
+  const control = page.getByRole("switch", { name: "Power", exact: true });
+  await expect(control).toHaveAttribute("aria-checked", "false");
+  await control.click();
+  await expect(page.getByText("Requested true. Waiting for a device report.")).toBeVisible();
+  await expect(control).toHaveAttribute("aria-checked", "false");
+  observed("typed-on", { power: true });
+  await expect(control).toHaveAttribute("aria-checked", "true");
+  await page.getByRole("button", { name: "Brightness", exact: true }).click();
+  await expect(page.getByRole("slider")).toBeVisible();
+  await page.getByRole("button", { name: "temperature", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Set value" })).toHaveCount(0);
+
+  await page.getByRole("link", { name: "Rules", exact: true }).click();
+  await page.getByRole("button", { name: "New rule" }).click();
+  await page.getByLabel("Rule name").fill("Dimmer setter fixture");
+  await page.getByLabel("Event type", { exact: true }).fill("manual.dim_fixture");
+  await page.getByRole("combobox", { name: "Step", exact: true }).selectOption("setter");
+  await page.getByLabel("Target service").fill(service);
+  await page.getByLabel("Target device").fill("lamp");
+  await page.getByLabel("Writable attribute").fill("dimlevel");
+  await page.getByRole("spinbutton", { name: "Brightness percentage" }).fill("60");
+  await page.getByRole("button", { name: "Validate and preview" }).click();
+  await expect(page.locator(".preview pre")).toContainText('attribute="dimlevel", value=60');
+});
+
+test("Devices groups across services and edits placement without changing control targets", async ({ page }) => {
+  await login(page, "/ui/devices");
+  const fan = page.getByRole("article", { name: "Bathroom fan", exact: true });
+  const sensor = page.getByRole("article", { name: "bathroom-sensor", exact: true });
+  await expect(fan).toBeVisible();
+  await expect(sensor).toBeVisible();
+  for (const card of [fan, sensor]) {
+    await card.getByRole("button", { name: "Edit placement" }).click();
+    await card.getByLabel("Location segments").fill("House\nBedroom\nShelf.1");
+    await card.getByLabel("Tags, one per line").fill("guest\nbattery");
+    await card.getByRole("button", { name: "Save placement" }).click();
+    await expect(card.getByRole("button", { name: "Save placement" })).toHaveCount(0);
+  }
+  await page.getByRole("button", { name: "Bedroom", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "House › Bedroom › Shelf.1", exact: true })).toBeVisible();
+  await expect(fan).toBeVisible();
+  await expect(sensor).toBeVisible();
+  await page.getByRole("button", { name: "Shelf.1", exact: true }).click();
+  await expect(fan).toBeVisible();
+  await page.getByLabel("Tags", { exact: true }).fill("guest,battery");
+  await page.getByRole("button", { name: "Apply filters" }).click();
+  await expect(page.getByRole("article")).toHaveCount(2);
+
+  const power = fan.getByRole("switch", { name: "power" });
+  const before = await power.getAttribute("aria-checked");
+  await power.click();
+  await expect(power).toHaveAttribute("aria-checked", before === "true" ? "false" : "true");
+  await fan.getByRole("button", { name: "Edit placement" }).click();
+  await fan.getByRole("button", { name: "Reset location" }).click();
+  await page.getByRole("button", { name: "All locations", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Unassigned", exact: true })).toBeVisible();
+  await expect(fan).toBeVisible();
+  await expect(sensor).toBeVisible();
+});

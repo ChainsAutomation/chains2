@@ -106,7 +106,7 @@ func sensorService() chains.Service {
 			readingKind: {"1": json.RawMessage(`{"type":"object","required":["value"],"properties":{"value":{"type":"number"}}}`)},
 			buttonKind:  {"1": json.RawMessage(`{"type":"object"}`)},
 		},
-		Devices: []chains.Device{{ID: "bathroom", Class: "sensor", Attributes: []string{"humidity", "last_button"}}},
+		Devices: []chains.Device{{ID: "bathroom", Attributes: chains.Attributes("humidity", "last_button")}},
 	}
 }
 
@@ -115,7 +115,7 @@ func fanService(idempotent bool) chains.Service {
 		Actions: map[string]map[string]json.RawMessage{
 			"set_power": {"1": json.RawMessage(`{"type":"object","required":["value"],"properties":{"value":{"type":"boolean"}}}`)},
 		},
-		Devices: []chains.Device{{ID: fanName, Name: "fan", Class: "fan", Actions: []string{"set_power"}, Attributes: []string{"power"}}},
+		Devices: []chains.Device{{ID: fanName, Name: "fan", Actions: []string{"set_power"}, Attributes: chains.Attributes("power")}},
 	}
 	if idempotent {
 		s.IdempotentActions = []string{"set_power"}

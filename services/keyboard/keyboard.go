@@ -105,7 +105,7 @@ func Definition(settings Settings) sdk.Definition { return definition(settings, 
 
 func definition(settings Settings, open openDevice) sdk.Definition {
 	return sdk.Definition{
-		Service: chains.Service{ServiceType: "keyboard", Devices: []chains.Device{{ID: "default", Class: "keyboard", Name: "USB keyboard", Attributes: []string{"last_key"}}},
+		Service: chains.Service{ServiceType: "keyboard", Devices: []chains.Device{{ID: "default", Name: "USB keyboard", Attributes: chains.Attributes("last_key")}},
 			Events: map[string]map[string]json.RawMessage{
 				Event: {"1": json.RawMessage(`{"type":"object","required":["action","code","key","keys","mods"],"properties":{"action":{"enum":["press","release"]},"code":{"type":"integer"},"key":{"type":"string"},"keys":{"type":"array","items":{"type":"string"}},"mods":{"type":"array","items":{"type":"string"}}},"additionalProperties":false}`)},
 			},

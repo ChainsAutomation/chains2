@@ -99,8 +99,8 @@ class TibberPulse(Service):
     event_attributes = {"event_reading": None}
 
     def describe_devices(self):
-        return [{"id": "default", "name": "Electricity meter", "class": "power_meter",
-                 "attributes": list(ATTRIBUTES)}]
+        return [{"id": "default", "name": "Electricity meter", "classes": [],
+                 "attributes": {name: {"schema": {"type": "number"}} for name in ATTRIBUTES}}]
 
     def onInit(self):
         self._bridge = PulseBridge(self.settings)

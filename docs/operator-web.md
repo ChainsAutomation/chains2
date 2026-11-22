@@ -1,6 +1,6 @@
 # Chains web console
 
-The authority can serve a bundled Solid 2 console for reported state, live activity, event submission, and traces. The web console uses the same operator API as `chainsctl`.
+The authority can serve a bundled Solid 2 console for reported state, live activity, event submission, rule authoring, and traces. The web console uses the same operator API as `chainsctl`.
 
 ## Build and run
 
@@ -26,14 +26,24 @@ For remote access, put the authority behind an HTTPS reverse proxy. Preserve the
 
 | View | Use |
 | --- | --- |
-| **State** | Browse registered services and devices, filter attributes, and inspect values, timestamps, and revisions. Devices in one observation share a revision. Declared attributes without an observation are marked **Unreported**. |
+| **State** | Browse registered services and devices, filter attributes, and inspect values, timestamps, and revisions. Devices in one observation share a revision. Declared attributes without an observation are marked **Unreported**. Select a writable attribute to send a command. [Device controls](actions.md) |
+| **Devices** | Browse device cards by location, edit placement and tags, and control writable attributes. [Device dashboard](devices.md) |
 | **Watch** | Follow events, rule traces, and actions. Pause to inspect a stable list or resume to catch up. Type wildcards such as `action.*` work in the type filter. Enable low-level traffic to see heartbeats and synchronization. |
 | **Send** | Choose a configured HTTP profile or write a `manual.<name>` event. Use fields when available, switch to JSON for complex data, or insert an observed state value. Preview then publish. Drafts survive tab and profile changes until reload or sign-out. |
+| **Rules** | Create and validate rules, publish live, import source files, and export the authority catalog. |
 | **Trace Explorer** | Open a publication receipt, inspect a Watch record, or paste a correlation ID. The timeline joins matching events, rule runs, actions, outcomes, and state changes. Parent links resolve to records Chains still has. |
 
 Enable `operator_trace` on the authority or any worker whose rule lifecycle should appear. Trace Explorer uses the newest 2,048 activity records retained by the authority. An authority restart clears that buffer. See the [operator CLI guide](operator-cli.md) for profile configuration and watch retention.
 
 The authenticated `GET /operator/v1/services` endpoint provides registered descriptions for the selectors. `GET /operator/v1/traces?correlation=<id>` returns the matching activity records and the oldest retained record, when present.
+
+## Rules
+
+Open **Rules** and select **New rule**. The guided form supports an event trigger, elapsed interval, or calendar schedule followed by actions. It uses registered devices and action schemas to populate selectors and arguments. Use **Set attribute** for a typed setter and **Continue after** to select the action wait mode. Use the DSL editor for conditions, loops, expressions, or more waits. Select **Validate and preview** to see the exact source and any diagnostics, then **Publish**. Enable, disable, and edit web rules from the same editor. Publication cancels runs of the changed rule. Actions already submitted can still finish. Deployment-managed rules appear read-only on the authority.
+
+The authority stores each web rule as a `.chains` file in the generation named by `CURRENT`. Files are keyed by rule ID and the manifest records their names and enabled status. Set `web_rules_dir`, `-web-rules-dir`, or `CHAINS_WEB_RULES_DIR` to change the directory. The default appends `.rules` to the configured SQLite path, for example `$XDG_STATE_HOME/chains/state.sqlite.rules`. With `-database :memory:`, provide an explicit directory to publish. The authority loads published rules on restart and honors its event subscriptions and scheduler settings.
+
+**Download All** exports a ZIP containing the authority's deployment and web rules, including disabled rules. **Import file** previews one `.chains` file or an exported ZIP. Review the source and enabled status before publishing. For duplicate names, rename, skip, or replace a web rule. A deployment rule can be skipped or imported under a new name. The selected changes publish together. Individual sources are limited to 128 KiB and imports to 8 MiB. [Architecture decision](adr/0002-web-managed-rules.md)
 
 ## Development and verification
 

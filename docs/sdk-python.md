@@ -103,6 +103,10 @@ Use `run(emit=None)` or a context manager when embedding a service. Each instanc
 
 ## Events, actions, and registration
 
+Device descriptions can include `location` and `tags` lists. These provide defaults for the authority's catalog. [Device placement](devices.md)
+
+See the [event and State guide](events.md) for the shared wire format, batch constraints, and rule matching.
+
 - `event_<name>(...)` declares an event. Call `self._send_event(*, _device=None, _values=None, **fields)` inside it to publish the bound arguments and their defaults. Keyword fields override argument values and must fit the schema. `_device` selects a registered device. The default projection declares and updates `last_<method suffix>` with the reflected payload. Pass `_values={"attribute": value}` to project explicitly into declared attributes. A class can set `event_attributes = {"event_reading": None}` to skip automatic declaration when the method always supplies a projection.
 - `observe_batch(kind, observations, *, schema_version="1")` publishes a single revision across multiple devices. Pass a list of dictionaries with `device_id`, `values`, and optional `data`. The SDK validates the devices and declared schema. Omitted `data` uses `values` as the event payload.
 - `register_device(description)` adds a discovered device while the service is connected. Use a stable ID and register the device before emitting its first observation. Set `retain_devices = True` for dynamically discovered inventories that should remain registered across service restarts.
@@ -113,7 +117,7 @@ Use `run(emit=None)` or a context manager when embedding a service. Each instanc
 
 ## Reported state
 
-The default device has ID `system`. Declare its state keys in the `attributes` class tuple, or declare attributes per device in `describe_devices()`. Local state starts empty. An attribute record contains `value`, `changed_at`, and `observed_at`. Central records also carry a revision.
+The default device has ID `system`. Declare typed attributes as a dictionary of descriptors with `schema` and optional `setter`, `label`, `description`, and `unit`. The class-level `attributes` tuple declares open JSON schemas. Use `describe_devices()` for per-device attributes and `classes`. [Device contracts](actions.md) Local state starts empty. An attribute record contains `value`, `changed_at`, and `observed_at`. Central records also carry a revision.
 
 | API | Behavior |
 |---|---|

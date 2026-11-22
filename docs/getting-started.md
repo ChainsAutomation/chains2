@@ -40,7 +40,7 @@ export CHAINS_OPERATOR_URL=http://127.0.0.1:8080
 .dev/bin/chainsctl watch
 ```
 
-Edit `examples/humidity.chains` to change the demo rule and restart the launcher to reload it. The demo's HTTP profile is in `examples/humidity.json`. See [configuration and precedence](../README.md#configure-and-extend) for running a custom authority directly.
+Rules published through the web console are stored under `.dev/state.sqlite.rules` and survive a demo restart. Edit `examples/humidity.chains` to change the demo rule and restart the launcher to reload it. The demo's HTTP profile is in `examples/humidity.json`. See [configuration and precedence](../README.md#configure-and-extend) for running a custom authority directly.
 
 ## Frontend and SDK development
 
