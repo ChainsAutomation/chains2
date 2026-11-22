@@ -5,7 +5,6 @@ import { Button, type Navigate } from "./components";
 import { DevicesView } from "./devices";
 import { DashboardView, type Control, type Home } from "./home";
 import { deviceResource } from "./device-resource";
-import { Sharing } from "./sharing";
 import { DashboardBuilder } from "./dashboard-builder";
 import "./styles.css";
 
@@ -111,7 +110,6 @@ function App() {
           <Match when={page() === "devices"}><DevicesView api={api} entries={home()?.devices} operator={false} actions={actions} refreshCatalog={() => void reloadHome()} /></Match>
           <Match when={isOperator() && page() === "admin"}>
             <DashboardBuilder api={api} devices={home()?.devices ?? []} refresh={() => void reloadHome()} />
-            <Sharing api={api} devices={home()?.devices ?? []} refresh={() => void reloadHome()} />
           </Match>
         </Switch>
       </main>

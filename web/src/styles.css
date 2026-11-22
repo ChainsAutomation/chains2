@@ -251,4 +251,3 @@ fieldset { border: 0; padding: 0; margin: 1rem 0 0; display: grid; gap: .9rem; m
   .home-operator nav { display: flex; flex-wrap: wrap; }
   .home-operator .sidebar-footer { display: none; }
 }
-.household-sharing { display: grid; gap: .65rem; margin-top: 1rem; padding: .85rem; }

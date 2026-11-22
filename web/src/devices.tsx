@@ -55,11 +55,10 @@ export function DevicesView(props: { entries?: DeviceEntry[]; operator: boolean;
   const [pattern, setPattern] = createSignal("");
   const [tags, setTags] = createSignal("");
   const [deviceClass, setDeviceClass] = createSignal("");
-  const [shared, setShared] = createSignal(false);
   const [editing, setEditing] = createSignal("");
   const [placementLocation, setPlacementLocation] = createSignal("");
   const [placementTags, setPlacementTags] = createSignal("");
-  const [initial, setInitial] = createSignal<{ location: string; tags: string; shared: boolean }>();
+  const [initial, setInitial] = createSignal<{ location: string; tags: string }>();
   const [saving, setSaving] = createSignal(false);
   const [editError, setEditError] = createSignal("");
   const tree = createMemo(() => treeFor(props.entries ?? []));
@@ -96,13 +95,13 @@ export function DevicesView(props: { entries?: DeviceEntry[]; operator: boolean;
   }
   function edit(entry: DeviceEntry) {
     setEditing(key(entry));
-    const values = { location: (entry.device.location ?? []).join("\n"), tags: (entry.device.tags ?? []).filter(t => t !== "household").join("\n"), shared: !!entry.device.tags?.includes("household") };
-    setInitial(values); setShared(values.shared);
+    const values = { location: (entry.device.location ?? []).join("\n"), tags: (entry.device.tags ?? []).join("\n") };
+    setInitial(values);
     setPlacementLocation(values.location);
     setPlacementTags(values.tags);
     setEditError("");
   }
-  async function place(entry: DeviceEntry, body: { location?: string[] | null; tags?: string[] | null; household_shared?: boolean }) {
+  async function place(entry: DeviceEntry, body: { location?: string[] | null; tags?: string[] | null }) {
     if (saving()) return;
     setSaving(true); setEditError("");
     try {
@@ -143,15 +142,13 @@ export function DevicesView(props: { entries?: DeviceEntry[]; operator: boolean;
                       <form class="device-placement" onSubmit={event => { event.preventDefault(); const body = {
                         ...(placementLocation() !== initial()?.location ? { location: splitLines(placementLocation()) } : {}),
                         ...(placementTags() !== initial()?.tags ? { tags: splitLines(placementTags()) } : {}),
-                        ...(shared() !== initial()?.shared ? { household_shared: shared() } : {}),
                       };
                       if (Object.keys(body).length) void place(entry(), body); }}>
                         <label class="field"><span>Location segments</span><textarea rows="3" value={placementLocation()} placeholder={"House\nBedroom\nShelf"}
                           onInput={e => setPlacementLocation(e.currentTarget.value)} /></label>
                         <label class="field"><span>Tags, one per line</span><textarea rows="2" value={placementTags()} onInput={e => setPlacementTags(e.currentTarget.value)} /></label>
-                        <label><input type="checkbox" checked={shared()} onChange={e => setShared(e.currentTarget.checked)} /> Share with household</label>
                         <Show when={editError()}><p class="notice" role="alert">{editError()}</p></Show>
-                        <div class="toolbar"><Button primary type="submit" disabled={saving() || (placementLocation() === initial()?.location && placementTags() === initial()?.tags && shared() === initial()?.shared)}>Save placement</Button>
+                        <div class="toolbar"><Button primary type="submit" disabled={saving() || (placementLocation() === initial()?.location && placementTags() === initial()?.tags)}>Save placement</Button>
                           <Button disabled={saving()} onClick={() => void place(entry(), { location: [] })}>Clear location</Button>
                           <Button disabled={saving()} onClick={() => void place(entry(), { tags: [] })}>Clear tags</Button>
                           <Button disabled={saving()} onClick={() => void place(entry(), { location: null })}>Reset location</Button>

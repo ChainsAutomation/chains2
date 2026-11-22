@@ -37,7 +37,7 @@ func TestPlacementOverridesAndWorkerCatalog(t *testing.T) {
 	original := e.view.Snapshot().Devices["fixture/one"]["value"]
 	apply := func(location, tags string) {
 		t.Helper()
-		editor := placementEdit{context.Background(), "fixture", "one", json.RawMessage(location), json.RawMessage(tags), nil, make(chan error, 1)}
+		editor := placementEdit{context.Background(), "fixture", "one", json.RawMessage(location), json.RawMessage(tags), make(chan error, 1)}
 		e.placementEdits <- editor
 		if err := <-editor.done; err != nil {
 			t.Fatal(err)

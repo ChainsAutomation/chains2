@@ -236,12 +236,10 @@ test("Devices groups across services and edits placement without changing contro
   await expect(sensor).toBeVisible();
 });
 
-test("shared home, live dashboard groups and household controls", async ({ page, browser }) => {
+test("household can browse and control registered devices", async ({ page, browser }) => {
   await page.goto("/admin");
   await page.getByLabel("Access token").fill(token);
   await page.getByRole("button", { name: "Sign in" }).click();
-  await page.getByRole("button", { name: "Share Bathroom fan", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Stop sharing Bathroom fan" })).toBeVisible();
   const independent = await page.request.get("/operator/v1/session");
   expect(independent.status()).toBe(401);
 
@@ -252,8 +250,7 @@ test("shared home, live dashboard groups and household controls", async ({ page,
   await page.getByRole("button", { name: "Add separator" }).click();
   await page.getByLabel("Heading (optional)").fill("Controls");
   await page.getByRole("button", { name: "Add live group" }).click();
-  await page.getByLabel("Required tags, one per line").fill("household");
-  await page.getByLabel("Preview as household").check();
+  await page.getByLabel("Device class").fill("toggle");
   await page.getByRole("button", { name: "Preview dashboard" }).click();
   await expect(page.getByRole("article", { name: "Bathroom fan" })).toBeVisible();
   await expect(page.getByRole("switch")).toHaveCount(0);
@@ -276,8 +273,9 @@ test("shared home, live dashboard groups and household controls", async ({ page,
     await expect(toggle).toHaveAttribute("aria-checked", before === "true" ? "false" : "true");
     expect(await household.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
 
-    await page.getByRole("button", { name: "Share bathroom-sensor", exact: true }).click();
+    await household.getByRole("link", { name: "All Devices" }).click();
     await expect(household.getByRole("article", { name: "bathroom-sensor", exact: true })).toBeVisible();
+    await household.getByRole("link", { name: "Home", exact: true }).click();
     await household.reload();
     await expect(household.getByRole("heading", { name: "Household test" })).toBeVisible();
   } finally { await household.close(); }

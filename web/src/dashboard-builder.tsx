@@ -17,7 +17,6 @@ export function DashboardBuilder(props: { api: API; devices: DeviceEntry[]; refr
   const [dirty, setDirty] = createSignal(false);
   const [busy, setBusy] = createSignal(false);
   const [error, setError] = createSignal("");
-  const [household, setHousehold] = createSignal(false);
   const [preview, setPreview] = createSignal<Layout>();
   const [confirmDelete, setConfirmDelete] = createSignal(false);
   let previewRequest: AbortController | undefined;
@@ -72,7 +71,7 @@ export function DashboardBuilder(props: { api: API; devices: DeviceEntry[]; refr
     setError("");
     try {
       const rendered = await props.api<Layout>("/dashboard/preview", {
-        ...jsonBody("POST", { dashboard: board(), household: household() }), signal: controller.signal,
+        ...jsonBody("POST", { dashboard: board() }), signal: controller.signal,
       });
       if (!controller.signal.aborted) setPreview(rendered);
     } catch (err) { if (!controller.signal.aborted) setError((err as Error).message); }
@@ -155,9 +154,6 @@ export function DashboardBuilder(props: { api: API; devices: DeviceEntry[]; refr
               {kind === "device" ? "Add device" : kind === "group" ? "Add live group" : "Add separator"}
             </Button>}</For></div>
           <div class="toolbar">
-            <label><input type="checkbox" checked={household()} onChange={e => {
-              previewRequest?.abort(); setHousehold(e.currentTarget.checked); setPreview(undefined);
-            }} /> Preview as household</label>
             <Button onClick={() => void showPreview()}>Preview dashboard</Button>
           </div>
           <Show when={preview()}>{layout => <DashboardGrid layout={layout()} devices={props.devices} preview />}</Show>

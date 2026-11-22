@@ -121,13 +121,13 @@ func (b dashboardBlock) filter() (chains.PlacementFilter, error) {
 	return chains.ParsePlacementFilter(input)
 }
 
-func dashboardDevices(snapshot state.Snapshot, household bool) []deviceEntry {
+func dashboardDevices(snapshot state.Snapshot) []deviceEntry {
 	entries := []deviceEntry{}
 	for _, service := range snapshot.Services {
+		if service.UUID == chains.OperatorService {
+			continue
+		}
 		for _, d := range service.Devices {
-			if household && (service.UUID == chains.OperatorService || !slices.Contains(d.Tags, state.HouseholdTag)) {
-				continue
-			}
 			values := map[string]state.Attribute{}
 			for name, value := range snapshot.Devices[state.Address(service.UUID, d.ID)] {
 				if hasAttribute(d, name) {
@@ -141,7 +141,7 @@ func dashboardDevices(snapshot state.Snapshot, household bool) []deviceEntry {
 	return entries
 }
 
-func resolveDashboard(board dashboard, devices []deviceEntry, household bool) dashboardLayout {
+func resolveDashboard(board dashboard, devices []deviceEntry) dashboardLayout {
 	layout := dashboardLayout{board.ID, board.Name, board.Pinned, []dashboardSection{}}
 	fixed, used, available := map[string]bool{}, map[string]bool{}, map[string]bool{}
 	for _, d := range devices {
@@ -161,9 +161,6 @@ func resolveDashboard(board dashboard, devices []deviceEntry, household bool) da
 				block.Devices = append(block.Devices, key)
 				used[key] = true
 			} else if !available[key] {
-				if household {
-					continue
-				}
 				block.Missing = true
 			}
 		case "group":
@@ -197,7 +194,7 @@ func dashboardBody(w http.ResponseWriter, r *http.Request, target any) bool {
 
 func (e *Engine) dashboardRoutes(mux *http.ServeMux, sessions *browserSessions, loopbackProxy bool) {
 	const base = householdBase + "/dashboard"
-	handle := func(pattern string, operatorOnly bool, next func(http.ResponseWriter, *http.Request, bool)) {
+	handle := func(pattern string, operatorOnly bool, next http.HandlerFunc) {
 		mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Cache-Control", "no-store")
 			session, ok := sessions.lookup(r)
@@ -205,8 +202,7 @@ func (e *Engine) dashboardRoutes(mux *http.ServeMux, sessions *browserSessions, 
 				http.Error(w, "unauthorized", 401)
 				return
 			}
-			household := session.role == "household"
-			if household && operatorOnly {
+			if operatorOnly && session.role != "operator" {
 				http.Error(w, "operator access required", 403)
 				return
 			}
@@ -224,7 +220,7 @@ func (e *Engine) dashboardRoutes(mux *http.ServeMux, sessions *browserSessions, 
 			defer cancel()
 			stop := context.AfterFunc(session.Context, cancel)
 			defer stop()
-			next(w, r.WithContext(ctx), household)
+			next(w, r.WithContext(ctx))
 		})
 	}
 	catalog := func(w http.ResponseWriter) (dashboardCatalog, bool) {
@@ -238,16 +234,16 @@ func (e *Engine) dashboardRoutes(mux *http.ServeMux, sessions *browserSessions, 
 		http.Error(w, "dashboard catalog unavailable", 500)
 		return dashboardCatalog{}, false
 	}
-	handle("GET "+base, false, func(w http.ResponseWriter, _ *http.Request, household bool) {
+	handle("GET "+base, false, func(w http.ResponseWriter, _ *http.Request) {
 		c, ok := catalog(w)
 		if !ok {
 			return
 		}
 		snapshot := e.view.Snapshot()
-		devices := dashboardDevices(snapshot, household)
+		devices := dashboardDevices(snapshot)
 		layouts := make([]dashboardLayout, 0, len(c.Dashboards))
 		for _, board := range c.Dashboards {
-			layouts = append(layouts, resolveDashboard(board, devices, household))
+			layouts = append(layouts, resolveDashboard(board, devices))
 		}
 		writeJSON(w, 200, struct {
 			Home       string            `json:"home_id"`
@@ -255,12 +251,12 @@ func (e *Engine) dashboardRoutes(mux *http.ServeMux, sessions *browserSessions, 
 			Dashboards []dashboardLayout `json:"dashboards"`
 		}{c.Home, devices, layouts})
 	})
-	handle("GET "+base+"/config", true, func(w http.ResponseWriter, _ *http.Request, _ bool) {
+	handle("GET "+base+"/config", true, func(w http.ResponseWriter, _ *http.Request) {
 		if c, ok := catalog(w); ok {
 			writeJSON(w, 200, c)
 		}
 	})
-	handle("PUT "+base+"/config", true, func(w http.ResponseWriter, r *http.Request, _ bool) {
+	handle("PUT "+base+"/config", true, func(w http.ResponseWriter, r *http.Request) {
 		var c dashboardCatalog
 		if !dashboardBody(w, r, &c) {
 			return
@@ -298,10 +294,9 @@ func (e *Engine) dashboardRoutes(mux *http.ServeMux, sessions *browserSessions, 
 		}
 		writeJSON(w, 200, c)
 	})
-	handle("POST "+base+"/preview", true, func(w http.ResponseWriter, r *http.Request, _ bool) {
+	handle("POST "+base+"/preview", true, func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
-			Board     dashboard `json:"dashboard"`
-			Household bool      `json:"household"`
+			Board dashboard `json:"dashboard"`
 		}
 		if !dashboardBody(w, r, &req) {
 			return
@@ -310,30 +305,12 @@ func (e *Engine) dashboardRoutes(mux *http.ServeMux, sessions *browserSessions, 
 			http.Error(w, err.Error(), 400)
 			return
 		}
-		writeJSON(w, 200, resolveDashboard(req.Board, dashboardDevices(e.view.Snapshot(), req.Household), req.Household))
+		writeJSON(w, 200, resolveDashboard(req.Board, dashboardDevices(e.view.Snapshot())))
 	})
 	handle("POST "+householdBase+"/actions", false, e.dashboardAction)
-	handle("PATCH "+householdBase+"/devices/{service}/{device}/sharing", true, func(w http.ResponseWriter, r *http.Request, _ bool) {
-		var body struct {
-			Shared *bool `json:"shared"`
-		}
-		if !dashboardBody(w, r, &body) {
-			return
-		}
-		if body.Shared == nil {
-			http.Error(w, "provide shared", 400)
-			return
-		}
-		service := r.PathValue("service")
-		if service == chains.OperatorService {
-			http.NotFound(w, r)
-			return
-		}
-		e.submitPlacement(w, r, placementEdit{ctx: r.Context(), service: service, device: r.PathValue("device"), householdShared: body.Shared, done: make(chan error, 1)})
-	})
 }
 
-func (e *Engine) dashboardAction(w http.ResponseWriter, r *http.Request, household bool) {
+func (e *Engine) dashboardAction(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Service   string          `json:"service_id"`
 		Device    string          `json:"device_id"`
@@ -345,7 +322,7 @@ func (e *Engine) dashboardAction(w http.ResponseWriter, r *http.Request, househo
 	}
 	s, _ := e.view.Service(req.Service)
 	d, known := device(s, req.Device)
-	if !known || (household && (req.Service == chains.OperatorService || !slices.Contains(d.Tags, state.HouseholdTag))) {
+	if !known || req.Service == chains.OperatorService {
 		http.Error(w, "device unavailable", 404)
 		return
 	}

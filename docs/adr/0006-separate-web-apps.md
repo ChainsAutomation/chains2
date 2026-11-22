@@ -1,6 +1,6 @@
 # ADR 0006 — Separate household and operator web apps
 
-**Status** Accepted
+**Status** Accepted. The per-device sharing decision is superseded by [ADR 0007](0007-household-device-access.md).
 
 ## Context
 

@@ -19,15 +19,11 @@ type placementEdit struct {
 	ctx             context.Context
 	service, device string
 	location, tags  json.RawMessage
-	householdShared *bool
 	done            chan error
 }
 
 func (e *Engine) editPlacement(ctx context.Context, edit placementEdit) error {
 	update, err := e.authority.EditPlacement(edit.service, edit.device, func(p state.PlacementOverride) (state.PlacementOverride, error) {
-		if edit.householdShared != nil {
-			p.HouseholdShared = *edit.householdShared
-		}
 		for _, field := range []struct {
 			raw json.RawMessage
 			dst **[]string
@@ -79,42 +75,36 @@ func (e *Engine) deviceRoutes(mux *http.ServeMux, auth func(http.HandlerFunc) ht
 	mux.HandleFunc("GET "+base, auth(e.listDevices))
 	mux.HandleFunc("PATCH "+base+"/{service}/{device}/placement", auth(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			Location        json.RawMessage `json:"location"`
-			Tags            json.RawMessage `json:"tags"`
-			HouseholdShared *bool           `json:"household_shared"`
+			Location json.RawMessage `json:"location"`
+			Tags     json.RawMessage `json:"tags"`
 		}
 		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10))
 		decoder.DisallowUnknownFields()
-		if decoder.Decode(&body) != nil || decoder.Decode(new(any)) != io.EOF || (len(body.Location) == 0 && len(body.Tags) == 0 && body.HouseholdShared == nil) {
-			http.Error(w, "provide location, tags, or household sharing", 400)
+		if decoder.Decode(&body) != nil || decoder.Decode(new(any)) != io.EOF || (len(body.Location) == 0 && len(body.Tags) == 0) {
+			http.Error(w, "provide location or tags", 400)
 			return
 		}
-		edit := placementEdit{r.Context(), r.PathValue("service"), r.PathValue("device"), body.Location, body.Tags, body.HouseholdShared, make(chan error, 1)}
-		e.submitPlacement(w, r, edit)
-	}))
-}
-
-func (e *Engine) submitPlacement(w http.ResponseWriter, r *http.Request, edit placementEdit) {
-
-	select {
-	case e.placementEdits <- edit:
-	case <-r.Context().Done():
-		return
-	}
-	select {
-	case <-r.Context().Done():
-		return
-	case err := <-edit.done:
-		if err != nil {
-			status := http.StatusBadRequest
-			if errors.Is(err, state.ErrUnknownDevice) {
-				status = http.StatusNotFound
+		edit := placementEdit{r.Context(), r.PathValue("service"), r.PathValue("device"), body.Location, body.Tags, make(chan error, 1)}
+		select {
+		case e.placementEdits <- edit:
+		case <-r.Context().Done():
+			return
+		}
+		select {
+		case <-r.Context().Done():
+			return
+		case err := <-edit.done:
+			if err != nil {
+				status := http.StatusBadRequest
+				if errors.Is(err, state.ErrUnknownDevice) {
+					status = http.StatusNotFound
+				}
+				http.Error(w, err.Error(), status)
+				return
 			}
-			http.Error(w, err.Error(), status)
-			return
+			w.WriteHeader(http.StatusNoContent)
 		}
-		w.WriteHeader(http.StatusNoContent)
-	}
+	}))
 }
 
 type deviceEntry struct {
