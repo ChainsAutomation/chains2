@@ -19,6 +19,7 @@ mqtt_port=${CHAINS_WEB_TEST_MQTT_PORT:-18883}
 web_port=${CHAINS_WEB_TEST_PORT:-18080}
 export CHAINS_WEB_TEST_MQTT_PORT="$mqtt_port" CHAINS_WEB_TEST_URL="http://127.0.0.1:$web_port"
 export CHAINS_WEB_TEST_TOKEN="web-fixture-token"
+export CHAINS_HOUSEHOLD_TOKEN="web-fixture-household"
 export CHAINS_TOKEN="$CHAINS_WEB_TEST_TOKEN"
 export CHAINS_BUS="mqtt://127.0.0.1:$mqtt_port"
 export CHAINS_NAMESPACE="web-fixture"

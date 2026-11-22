@@ -20,12 +20,12 @@ export function Picker(props: {
     </datalist>
   </label>;
 }
-export function Button(props: { children: JSX.Element; onClick?: () => void; primary?: boolean; disabled?: boolean; type?: "button" | "submit" }) {
+export function Button(props: { children: JSX.Element; "aria-label"?: string; onClick?: () => void; primary?: boolean; disabled?: boolean; type?: "button" | "submit" }) {
   return <button type={props.type ?? "button"} class={props.primary ? "button primary" : "button"}
-    onClick={() => props.onClick?.()} disabled={props.disabled}>{props.children}</button>;
+    aria-label={props["aria-label"]} onClick={() => props.onClick?.()} disabled={props.disabled}>{props.children}</button>;
 }
-export function Heading(props: { title: string; subtitle: string; children?: JSX.Element }) {
-  return <header class="heading"><div><h1>{props.title}</h1><p>{props.subtitle}</p></div><div class="toolbar">{props.children}</div></header>;
+export function Heading(props: { title: string; subtitle?: string; children?: JSX.Element }) {
+  return <header class="heading"><div><h1>{props.title}</h1><Show when={props.subtitle}><p>{props.subtitle}</p></Show></div><div class="toolbar">{props.children}</div></header>;
 }
 export function Empty(props: { title: string; children?: JSX.Element }) {
   return <div class="empty"><strong>{props.title}</strong><Show when={props.children}><p>{props.children}</p></Show></div>;

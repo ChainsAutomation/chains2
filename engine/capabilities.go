@@ -147,6 +147,10 @@ func (e *Engine) ResolveSetter(ref rules.DeviceRef, name string, value any) (cha
 	if !known || !ok {
 		return chains.Setter{}, nil, errors.New("unknown device")
 	}
+	return e.resolveDeviceSetter(d, name, value)
+}
+
+func (e *Engine) resolveDeviceSetter(d chains.Device, name string, value any) (chains.Setter, map[string]any, error) {
 	attr, ok := d.Attributes[name]
 	if !ok || attr.Setter == nil {
 		return chains.Setter{}, nil, fmt.Errorf("attribute %q is not writable", name)

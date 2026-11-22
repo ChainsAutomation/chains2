@@ -82,6 +82,9 @@ func openBus(ctx context.Context, address, namespace string, sub bus.Subscriptio
 
 func runEngine(ctx context.Context, c config) error {
 	assets := webui.Assets()
+	if c.HouseholdToken != "" && (!c.OperatorWeb || c.HouseholdToken == c.Token) {
+		return errors.New("household token requires the web console and must differ from the operator token")
+	}
 	if c.OperatorWeb && (!c.OperatorAPI || assets == nil) {
 		return errors.New("operator web requires -operator-api and a build with -tags webui")
 	}
@@ -172,7 +175,7 @@ func runEngine(ctx context.Context, c config) error {
 	}
 	handler := e.HTTP(c.Token, c.HTTP)
 	if c.OperatorWeb {
-		handler = e.WebHTTP(c.Token, c.HTTP, assets, c.OperatorWebLoopbackProxy)
+		handler = e.WebHTTP(c.Token, c.HTTP, assets, c.OperatorWebLoopbackProxy, c.HouseholdToken)
 	}
 	server := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second}
 	defer server.Close()

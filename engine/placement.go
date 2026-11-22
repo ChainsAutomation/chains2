@@ -19,11 +19,15 @@ type placementEdit struct {
 	ctx             context.Context
 	service, device string
 	location, tags  json.RawMessage
+	householdShared *bool
 	done            chan error
 }
 
 func (e *Engine) editPlacement(ctx context.Context, edit placementEdit) error {
 	update, err := e.authority.EditPlacement(edit.service, edit.device, func(p state.PlacementOverride) (state.PlacementOverride, error) {
+		if edit.householdShared != nil {
+			p.HouseholdShared = *edit.householdShared
+		}
 		for _, field := range []struct {
 			raw json.RawMessage
 			dst **[]string
@@ -75,16 +79,17 @@ func (e *Engine) deviceRoutes(mux *http.ServeMux, auth func(http.HandlerFunc) ht
 	mux.HandleFunc("GET "+base, auth(e.listDevices))
 	mux.HandleFunc("PATCH "+base+"/{service}/{device}/placement", auth(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			Location json.RawMessage `json:"location"`
-			Tags     json.RawMessage `json:"tags"`
+			Location        json.RawMessage `json:"location"`
+			Tags            json.RawMessage `json:"tags"`
+			HouseholdShared *bool           `json:"household_shared"`
 		}
 		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10))
 		decoder.DisallowUnknownFields()
-		if decoder.Decode(&body) != nil || decoder.Decode(new(any)) != io.EOF || (len(body.Location) == 0 && len(body.Tags) == 0) {
-			http.Error(w, "provide location or tags", 400)
+		if decoder.Decode(&body) != nil || decoder.Decode(new(any)) != io.EOF || (len(body.Location) == 0 && len(body.Tags) == 0 && body.HouseholdShared == nil) {
+			http.Error(w, "provide location, tags, or household sharing", 400)
 			return
 		}
-		edit := placementEdit{r.Context(), r.PathValue("service"), r.PathValue("device"), body.Location, body.Tags, make(chan error, 1)}
+		edit := placementEdit{r.Context(), r.PathValue("service"), r.PathValue("device"), body.Location, body.Tags, body.HouseholdShared, make(chan error, 1)}
 		select {
 		case e.placementEdits <- edit:
 		case <-r.Context().Done():
@@ -152,20 +157,22 @@ func (e *Engine) listDevices(w http.ResponseWriter, r *http.Request) {
 			entries = append(entries, deviceEntry{service.UUID, service.Name, d, values})
 		}
 	}
-	slices.SortFunc(entries, func(a, b deviceEntry) int {
-		if n := slices.Compare(a.Device.Location, b.Device.Location); n != 0 {
-			return n
-		}
-		if n := strings.Compare(a.Device.Name, b.Device.Name); n != 0 {
-			return n
-		}
-		if n := strings.Compare(a.ServiceID, b.ServiceID); n != 0 {
-			return n
-		}
-		return strings.Compare(a.Device.ID, b.Device.ID)
-	})
+	slices.SortFunc(entries, compareDeviceEntries)
 	writeJSON(w, 200, struct {
 		Revision uint64        `json:"revision"`
 		Devices  []deviceEntry `json:"devices"`
 	}{s.Revision, entries})
+}
+
+func compareDeviceEntries(a, b deviceEntry) int {
+	if n := slices.Compare(a.Device.Location, b.Device.Location); n != 0 {
+		return n
+	}
+	if n := strings.Compare(a.Device.Name, b.Device.Name); n != 0 {
+		return n
+	}
+	if n := strings.Compare(a.ServiceID, b.ServiceID); n != 0 {
+		return n
+	}
+	return strings.Compare(a.Device.ID, b.Device.ID)
 }

@@ -3,9 +3,9 @@ import { execFileSync } from "node:child_process";
 
 const token = process.env.CHAINS_WEB_TEST_TOKEN ?? "web-fixture-token";
 
-async function login(page: Page, path = "/ui/") {
+async function login(page: Page, path = "/ui/state") {
   await page.goto(path);
-  await page.getByLabel("Operator token").fill(token);
+  await page.getByLabel("Access token").fill(token);
   await page.getByRole("button", { name: "Sign in" }).click();
   await expect(page.getByRole("navigation", { name: "Main navigation" })).toBeVisible();
 }
@@ -90,7 +90,7 @@ test("resume cursor, gap, keyboard navigation, narrow layout and revoked session
   const origin = new URL(page.url()).origin;
   expect((await page.request.delete("/operator/v1/session", { headers: { Origin: origin } })).status()).toBe(204);
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Operator sign-in" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Sign in to Chains" })).toBeVisible();
 });
 
 test("guided and DSL rules publish live, download, and import with conflicts", async ({ page }) => {
@@ -234,4 +234,55 @@ test("Devices groups across services and edits placement without changing contro
   await expect(page.getByRole("heading", { name: "Unassigned", exact: true })).toBeVisible();
   await expect(fan).toBeVisible();
   await expect(sensor).toBeVisible();
+});
+
+test("shared home, live dashboard groups and household controls", async ({ page, browser }) => {
+  await login(page, "/ui/devices");
+  const fan = page.getByRole("article", { name: "Bathroom fan", exact: true });
+  await fan.getByRole("button", { name: "Edit placement" }).click();
+  await fan.getByLabel("Share with household").check();
+  await fan.getByRole("button", { name: "Save placement" }).click();
+  await expect(fan.getByRole("button", { name: "Save placement" })).toHaveCount(0);
+
+  await page.getByRole("link", { name: "Dashboard builder" }).click();
+  await page.getByRole("button", { name: "New dashboard" }).click();
+  await page.getByLabel("Dashboard name").fill("Household test");
+  await page.getByLabel("Use as home").check();
+  await page.getByLabel("Pin in navigation").check();
+  await page.getByRole("button", { name: "Add separator" }).click();
+  await page.getByLabel("Heading (optional)").fill("Controls");
+  await page.getByRole("button", { name: "Add live group" }).click();
+  await page.getByLabel("Required tags, one per line").fill("household");
+  await page.getByLabel("Preview as household").check();
+  await page.getByRole("button", { name: "Preview dashboard" }).click();
+  await expect(page.getByRole("article", { name: "Bathroom fan" })).toBeVisible();
+  await expect(page.getByRole("switch")).toHaveCount(0);
+  await page.getByRole("button", { name: "Save dashboards" }).click();
+  await expect(page.getByRole("link", { name: "Household test" })).toBeVisible();
+
+  const household = await browser.newPage({ viewport: { width: 390, height: 844 } });
+  try {
+    await household.goto(new URL("/ui/", page.url()).href);
+    await household.getByLabel("Access token").fill("web-fixture-household");
+    await household.getByRole("button", { name: "Sign in" }).click();
+    await expect(household.getByRole("heading", { name: "Household test" })).toBeVisible();
+    await expect(household.getByRole("heading", { name: "Controls" })).toBeVisible();
+    await expect(household.getByRole("link", { name: "Dashboard builder" })).toHaveCount(0);
+    expect((await household.request.get("/operator/v1/rules")).status()).toBe(403);
+    const toggle = household.getByRole("switch", { name: "power" });
+    const before = await toggle.getAttribute("aria-checked");
+    await toggle.focus();
+    await household.keyboard.press("Space");
+    await expect(toggle).toHaveAttribute("aria-checked", before === "true" ? "false" : "true");
+    expect(await household.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+
+    await page.getByRole("link", { name: "All Devices" }).click();
+    const sensor = page.getByRole("article", { name: "bathroom-sensor", exact: true });
+    await sensor.getByRole("button", { name: "Edit placement" }).click();
+    await sensor.getByLabel("Share with household").check();
+    await sensor.getByRole("button", { name: "Save placement" }).click();
+    await expect(household.getByRole("article", { name: "bathroom-sensor", exact: true })).toBeVisible();
+    await household.reload();
+    await expect(household.getByRole("heading", { name: "Household test" })).toBeVisible();
+  } finally { await household.close(); }
 });

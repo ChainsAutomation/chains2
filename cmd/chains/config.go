@@ -26,6 +26,7 @@ type config struct {
 	Encoding                 string                       `json:"encoding"`
 	Listen                   string                       `json:"listen"`
 	Token                    string                       `json:"token"`
+	HouseholdToken           string                       `json:"household_token"`
 	Timezone                 string                       `json:"timezone"`
 	Week                     string                       `json:"week"`
 	Scheduler                bool                         `json:"scheduler"`
@@ -57,7 +58,7 @@ func readConfig(args []string) (config, error) {
 		Sensor:      sensorMapping{Device: "bathroom-sensor", Event: "humidity.reported", Attribute: "humidity", Field: "value", Format: "number", Schema: json.RawMessage(numericSchema)}}
 	f := flag.NewFlagSet("chains", flag.ContinueOnError)
 	path := f.String("config", "", "configuration file")
-	fields := map[string]*string{"z2m-mqtt-url": &c.Z2M.MQTTURL, "z2m-base-topic": &c.Z2M.BaseTopic, "z2m-service-id": &c.Z2M.ServiceID, "z2m-service-name": &c.Z2M.ServiceName, "z2m-ca-file": &c.Z2M.CAFile, "id": &c.ID, "authority": &c.Authority, "bus": &c.Bus, "namespace": &c.Namespace, "database": &c.Database, "web-rules-dir": &c.WebRulesDir, "rules": &c.Rules, "encoding": &c.Encoding, "listen": &c.Listen, "token": &c.Token, "timezone": &c.Timezone, "week": &c.Week, "sensor-broker": &c.SensorBroker, "sensor-topic": &c.SensorTopic}
+	fields := map[string]*string{"z2m-mqtt-url": &c.Z2M.MQTTURL, "z2m-base-topic": &c.Z2M.BaseTopic, "z2m-service-id": &c.Z2M.ServiceID, "z2m-service-name": &c.Z2M.ServiceName, "z2m-ca-file": &c.Z2M.CAFile, "id": &c.ID, "authority": &c.Authority, "bus": &c.Bus, "namespace": &c.Namespace, "database": &c.Database, "web-rules-dir": &c.WebRulesDir, "rules": &c.Rules, "encoding": &c.Encoding, "listen": &c.Listen, "token": &c.Token, "household-token": &c.HouseholdToken, "timezone": &c.Timezone, "week": &c.Week, "sensor-broker": &c.SensorBroker, "sensor-topic": &c.SensorTopic}
 	var cli = map[string]*string{}
 	for name, ptr := range fields {
 		cli[name] = f.String(name, *ptr, name)

@@ -32,7 +32,8 @@ func openDB(path string) (*database, error) {
 	err := d.exec(`PRAGMA journal_mode=WAL;
  CREATE TABLE IF NOT EXISTS entries (kind TEXT NOT NULL, owner TEXT NOT NULL, name TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(kind,owner,name));
  CREATE TABLE IF NOT EXISTS seen (id TEXT PRIMARY KEY, received INTEGER NOT NULL DEFAULT (unixepoch()));
- CREATE INDEX IF NOT EXISTS seen_received ON seen(received);`)
+ CREATE INDEX IF NOT EXISTS seen_received ON seen(received);
+ CREATE TABLE IF NOT EXISTS dashboard_catalog (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL);`)
 	if err != nil {
 		d.close()
 		return nil, err
@@ -197,4 +198,42 @@ func loadEntry(s *Snapshot, kind, owner, name, value string) error {
 		return fmt.Errorf("unknown persisted entry kind %q", kind)
 	}
 	return nil
+}
+
+// DashboardCatalog reads dashboard configuration outside the replicated State tree.
+func (a *Authority) DashboardCatalog() (json.RawMessage, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.db.dashboardCatalog()
+}
+
+func (d *database) dashboardCatalog() (json.RawMessage, error) {
+	s, err := d.statement("SELECT value FROM dashboard_catalog WHERE id=1")
+	if err != nil {
+		return nil, err
+	}
+	defer C.sqlite3_finalize(s)
+	switch C.sqlite3_step(s) {
+	case C.SQLITE_DONE:
+		return nil, nil
+	case C.SQLITE_ROW:
+		return json.RawMessage(C.GoString((*C.char)(unsafe.Pointer(C.sqlite3_column_text(s, 0))))), nil
+	default:
+		return nil, d.err()
+	}
+}
+
+// EditDashboardCatalog serializes validation and replacement with other catalog edits.
+func (a *Authority) EditDashboardCatalog(edit func(json.RawMessage) (json.RawMessage, error)) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	current, err := a.db.dashboardCatalog()
+	if err != nil {
+		return err
+	}
+	next, err := edit(current)
+	if err != nil {
+		return err
+	}
+	return a.db.run("INSERT OR REPLACE INTO dashboard_catalog(id,value) VALUES(1,?)", string(next))
 }

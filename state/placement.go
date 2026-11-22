@@ -8,9 +8,12 @@ import (
 )
 
 // PlacementOverride uses nil fields to inherit the service's registered defaults.
+const HouseholdTag = "household"
+
 type PlacementOverride struct {
-	Location *[]string `json:"location,omitempty"`
-	Tags     *[]string `json:"tags,omitempty"`
+	Location        *[]string `json:"location,omitempty"`
+	Tags            *[]string `json:"tags,omitempty"`
+	HouseholdShared bool      `json:"household_shared,omitempty"`
 }
 
 type placementWrite struct {
@@ -37,6 +40,11 @@ func (a *Authority) effective(s chains.Service) chains.Service {
 		}
 		if p.Tags != nil {
 			device.Tags = *p.Tags
+		}
+		device.Tags = slices.DeleteFunc(slices.Clone(device.Tags), func(tag string) bool { return tag == HouseholdTag })
+		if p.HouseholdShared {
+			device.Tags = append(device.Tags, HouseholdTag)
+			slices.Sort(device.Tags)
 		}
 	}
 	return s

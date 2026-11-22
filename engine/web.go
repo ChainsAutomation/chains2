@@ -26,6 +26,7 @@ const sessionLifetime = 8 * time.Hour
 type browserSession struct {
 	context.Context
 	cancel context.CancelFunc
+	role   string
 }
 
 type browserSessions struct {
@@ -67,7 +68,7 @@ func webOrigin(r *http.Request, loopbackProxy bool) (secure, allowed bool) {
 		(strings.EqualFold(host, "localhost") || hostIP.Unmap().IsLoopback())
 }
 
-func (s *browserSessions) create() (string, bool) {
+func (s *browserSessions) create(role string) (string, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for key, session := range s.sessions {
@@ -84,12 +85,12 @@ func (s *browserSessions) create() (string, bool) {
 	}
 	id := hex.EncodeToString(random[:])
 	ctx, cancel := context.WithTimeout(context.Background(), sessionLifetime)
-	s.sessions[id] = browserSession{ctx, cancel}
+	s.sessions[id] = browserSession{ctx, cancel, role}
 	return id, true
 }
 
 // WebHTTP adds the bundled UI and browser sessions to the existing operator handler.
-func (e *Engine) WebHTTP(token string, mappings map[string]HTTPSource, assets fs.FS, loopbackProxy bool) http.Handler {
+func (e *Engine) WebHTTP(token string, mappings map[string]HTTPSource, assets fs.FS, loopbackProxy bool, householdToken string) http.Handler {
 	api := e.HTTP(token, mappings)
 	index, err := fs.ReadFile(assets, "index.html")
 	if err != nil {
@@ -100,11 +101,12 @@ func (e *Engine) WebHTTP(token string, mappings map[string]HTTPSource, assets fs
 	path := operator.Base + "/session"
 	mux.HandleFunc("GET "+path, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
-		if _, ok := sessions.lookup(r); !ok {
+		session, ok := sessions.lookup(r)
+		if !ok {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		w.WriteHeader(http.StatusNoContent)
+		writeJSON(w, 200, map[string]string{"role": session.role})
 	})
 	mux.HandleFunc("POST "+path, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
@@ -117,18 +119,28 @@ func (e *Engine) WebHTTP(token string, mappings map[string]HTTPSource, assets fs
 			Token string `json:"token"`
 		}
 		d := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8192))
-		if d.Decode(&body) != nil || d.Decode(new(any)) != io.EOF || token == "" || subtle.ConstantTimeCompare([]byte(body.Token), []byte(token)) != 1 {
+		if d.Decode(&body) != nil || d.Decode(new(any)) != io.EOF {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
+		role := ""
+		if token != "" && subtle.ConstantTimeCompare([]byte(body.Token), []byte(token)) == 1 {
+			role = "operator"
+		} else if householdToken != "" && subtle.ConstantTimeCompare([]byte(body.Token), []byte(householdToken)) == 1 {
+			role = "household"
+		}
+		if role == "" {
+			http.Error(w, "unauthorized", 401)
+			return
+		}
 		sessions.revoke(r)
-		id, ok := sessions.create()
+		id, ok := sessions.create(role)
 		if !ok {
 			http.Error(w, "session capacity reached", http.StatusServiceUnavailable)
 			return
 		}
 		http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: id, Path: operator.Base, HttpOnly: true, Secure: secure, SameSite: http.SameSiteStrictMode, MaxAge: int(sessionLifetime.Seconds())})
-		w.WriteHeader(http.StatusNoContent)
+		writeJSON(w, 200, map[string]string{"role": role})
 	})
 	mux.HandleFunc("DELETE "+path, func(w http.ResponseWriter, r *http.Request) {
 		secure, ok := webOrigin(r, loopbackProxy)
@@ -145,6 +157,10 @@ func (e *Engine) WebHTTP(token string, mappings map[string]HTTPSource, assets fs
 		w.Header().Set("Cache-Control", "no-store")
 		if r.Header.Get("Authorization") == "" {
 			if session, ok := sessions.lookup(r); ok {
+				if session.role != "operator" {
+					http.Error(w, "operator access required", 403)
+					return
+				}
 				if r.Method != http.MethodGet && r.Method != http.MethodHead {
 					if _, ok := webOrigin(r, loopbackProxy); !ok {
 						http.Error(w, "forbidden origin", http.StatusForbidden)
@@ -161,8 +177,9 @@ func (e *Engine) WebHTTP(token string, mappings map[string]HTTPSource, assets fs
 		}
 		api.ServeHTTP(w, r)
 	}))
+	e.dashboardRoutes(mux, &sessions, loopbackProxy)
 	mux.Handle("GET /ui/assets/", http.StripPrefix("/ui/", http.FileServerFS(assets)))
-	for _, route := range []string{"/ui/{$}", "/ui/state", "/ui/watch", "/ui/send", "/ui/trace", "/ui/rules", "/ui/devices"} {
+	for _, route := range []string{"/ui/{$}", "/ui/state", "/ui/watch", "/ui/send", "/ui/trace", "/ui/rules", "/ui/devices", "/ui/dashboard-builder", "/ui/dashboards/{id}"} {
 		mux.HandleFunc("GET "+route, func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Cache-Control", "no-store")
 			w.Header().Set("Content-Security-Policy", "default-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")

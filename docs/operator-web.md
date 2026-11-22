@@ -18,7 +18,7 @@ Enable the console on the state authority. Set `CHAINS_TOKEN` to the operator to
 ./chains engine -listen 127.0.0.1:8080 -operator-api -operator-web -operator-trace
 ```
 
-Open `http://127.0.0.1:8080/ui/` and sign in with the token. The equivalent configuration settings are `operator_web` and `CHAINS_OPERATOR_WEB=true`. The console defaults to disabled. The Go binary serves all runtime assets. Builds without the `webui` tag still provide the CLI and operator API.
+Open `http://127.0.0.1:8080/ui/` and sign in with the token. Home and All Devices are in the top bar. The operator tools sit in a separate navigation section. See [Household dashboards](household-dashboards.md) for dashboard editing and household sign-in. The equivalent configuration settings are `operator_web` and `CHAINS_OPERATOR_WEB=true`. The console defaults to disabled. The Go binary serves all runtime assets. Builds without the `webui` tag still provide the CLI and operator API.
 
 For remote access, put the authority behind an HTTPS reverse proxy. Preserve the browser's original `Host` and disable buffering for `/operator/v1/activity`. HTTP sign-in is available over loopback. For a service reachable only through a loopback-bound Docker or Kubernetes forward, set `operator_web_loopback_proxy`, `-operator-web-loopback-proxy`, or `CHAINS_OPERATOR_WEB_LOOPBACK_PROXY=true`. This permits a matching loopback browser origin when the forwarding connection has a non-loopback peer address. The setting defaults to off and does not use forwarded headers. Browser sessions expire after eight hours and are cleared when the authority restarts. Sign out to revoke the current session. CLI clients continue to use the bearer token.
 
@@ -27,7 +27,7 @@ For remote access, put the authority behind an HTTPS reverse proxy. Preserve the
 | View | Use |
 | --- | --- |
 | **State** | Browse registered services and devices, filter attributes, and inspect values, timestamps, and revisions. Devices in one observation share a revision. Declared attributes without an observation are marked **Unreported**. Select a writable attribute to send a command. [Device controls](actions.md) |
-| **Devices** | Browse device cards by location, edit placement and tags, and control writable attributes. [Device dashboard](devices.md) |
+| **All Devices** | Browse device cards by location, edit placement and tags, and control writable attributes. [Device dashboard](devices.md) |
 | **Watch** | Follow events, rule traces, and actions. Pause to inspect a stable list or resume to catch up. Type wildcards such as `action.*` work in the type filter. Enable low-level traffic to see heartbeats and synchronization. |
 | **Send** | Choose a configured HTTP profile or write a `manual.<name>` event. Use fields when available, switch to JSON for complex data, or insert an observed state value. Preview then publish. Drafts survive tab and profile changes until reload or sign-out. |
 | **Rules** | Create and validate rules, publish live, import source files, and export the authority catalog. |

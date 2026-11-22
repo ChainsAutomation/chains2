@@ -28,7 +28,7 @@ func TestWebConsole(t *testing.T) {
 	}
 	defer e.Close()
 	assets := fstest.MapFS{"index.html": {Data: []byte("Chains UI")}, "assets/app.js": {Data: []byte("export {}")}}
-	handler := e.WebHTTP("secret", nil, assets, false)
+	handler := e.WebHTTP("secret", nil, assets, false, "family")
 	call := func(h http.Handler, method, path, origin, body, bearer string, cookie *http.Cookie, want int) *httptest.ResponseRecorder {
 		t.Helper()
 		req := httptest.NewRequest(method, "http://127.0.0.1"+path, strings.NewReader(body))
@@ -58,12 +58,12 @@ func TestWebConsole(t *testing.T) {
 	call(handler, "GET", path+"/services", "", "", "", nil, 401)
 	call(handler, "POST", path+"/session", "https://unrelated.example", `{"token":"secret"}`, "", nil, 403)
 	call(handler, "POST", path+"/session", "http://127.0.0.1", `{"token":"wrong"}`, "", nil, 401)
-	loggedIn := call(handler, "POST", path+"/session", "http://127.0.0.1", `{"token":"secret"}`, "", nil, 204)
+	loggedIn := call(handler, "POST", path+"/session", "http://127.0.0.1", `{"token":"secret"}`, "", nil, 200)
 	cookie := loggedIn.Result().Cookies()[0]
 	if !cookie.HttpOnly || cookie.SameSite != http.SameSiteStrictMode || cookie.Path != path || cookie.MaxAge != 28800 || cookie.Value == "secret" {
 		t.Fatalf("cookie %+v", cookie)
 	}
-	call(handler, "GET", path+"/session", "", "", "", cookie, 204)
+	call(handler, "GET", path+"/session", "", "", "", cookie, 200)
 	call(handler, "POST", path+"/events", "https://unrelated.example", `{"name":"test","data":{}}`, "", cookie, 403)
 	call(handler, "POST", path+"/events", "", `{"name":"test","data":{}}`, "secret", nil, 202)
 	call(handler, "POST", path+"/events", "http://127.0.0.1", `{"name":"test","data":{}}`, "", cookie, 202)
@@ -111,13 +111,13 @@ func TestBrowserOrigin(t *testing.T) {
 func TestExpiredBrowserSession(t *testing.T) {
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer cancel()
-	s := browserSessions{sessions: map[string]browserSession{"expired": {ctx, cancel}}}
+	s := browserSessions{sessions: map[string]browserSession{"expired": {ctx, cancel, "operator"}}}
 	req := httptest.NewRequest("GET", "/operator/v1/session", nil)
 	req.AddCookie(&http.Cookie{Name: sessionCookie, Value: "expired"})
 	if _, ok := s.lookup(req); ok {
 		t.Fatal("expired session was accepted")
 	}
-	if _, ok := s.create(); !ok || len(s.sessions) != 1 {
+	if _, ok := s.create("operator"); !ok || len(s.sessions) != 1 {
 		t.Fatal("expired session was not replaced")
 	}
 }

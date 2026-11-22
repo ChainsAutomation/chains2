@@ -1,12 +1,12 @@
 # Device locations and tags
 
-Open **Devices** in the web console for a dashboard grouped by location. Devices from different services appear together when their locations match. Select a location in the tree to include its descendants, or choose **Unassigned** for devices without a location. Cards show reported values and observation times and reuse the State page's controls for writable attributes. [Operator web console](operator-web.md)
+Open **All Devices** in the web console for a dashboard grouped by location. Devices from different services appear together when their locations match. Select a location in the tree to include its descendants, or choose **Unassigned** for devices without a location. Cards show reported values and typed controls for writable attributes. The same cards appear on [household dashboards](household-dashboards.md). [Operator web console](operator-web.md)
 
 ## Assign locations and tags
 
 A location is an ordered array of segments. For example, `["House", "Bedroom", "Shelf.1"]` places a device on a shelf with a literal dot in its name. Tags are individual labels such as `guest` and `battery`. They can group devices across locations. The State path remains `service_id/device_id/attribute` when a device moves.
 
-Integrations can supply `location` and `tags` in their device registration. An operator edit overrides the corresponding service default. Use **Clear** to set an empty value or **Reset** to inherit the current service default again. Overrides survive re-registration and authority restart. Names preserve case and may contain spaces. Each location or tag list supports up to 32 entries of up to 128 UTF-8 bytes each.
+Integrations can supply `location` and `tags` in their device registration. An operator edit overrides the corresponding service default. Use **Clear** to set an empty value or **Reset** to inherit the current service default again. Overrides survive re-registration and authority restart. The reserved `household` tag comes from the **Share with household** operator setting. It gives household sessions access to the device’s reported data and typed controls. Names preserve case and may contain spaces. Each location or tag list supports up to 32 entries of up to 128 UTF-8 bytes each.
 
 ## Match by location and tag
 
@@ -32,4 +32,4 @@ In a batch, device selectors apply to the same patch. A committed observation or
 ## Operator API
 
 - `GET /operator/v1/devices` lists device descriptions and their reported attributes at a single revision. Use `location` for dotted syntax or repeat `location_segment` for an array. Repeat `tag` to require several tags. Use `device_class` for class membership or `unassigned=true` for devices without a location.
-- `PATCH /operator/v1/devices/{service}/{device}/placement` accepts `location` and `tags` as arrays. Omit a field to keep its override, supply `[]` to clear it, or supply `null` to inherit the service default. Both endpoints use the existing operator authentication.
+- `PATCH /operator/v1/devices/{service}/{device}/placement` accepts `location` and `tags` as arrays. Omit a field to keep its override, supply `[]` to clear it, or supply `null` to inherit the service default. The patch also accepts a `household_shared` boolean. Both endpoints require operator authentication.
