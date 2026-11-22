@@ -1,6 +1,6 @@
 # Device locations and tags
 
-**All Devices** groups cards by service, ordered by service name and then device name. Select a location or apply a location pattern to group matching devices by location across services. Cards show the service name alongside the device name and location. Onkyo receiver zones show power, input, volume, and mute where available. The same cards appear on [household dashboards](household-dashboards.md).
+**All Devices** groups cards by service, ordered by service name and then device name. Select a location or apply a location pattern to group matching devices by location across services. Cards show the service name alongside the device name and location. Onkyo cards use the receiver name as the title and identify the zone beneath it. They show power, input, volume, and mute where available. The same cards appear on [household dashboards](household-dashboards.md).
 
 ## Assign locations and tags
 

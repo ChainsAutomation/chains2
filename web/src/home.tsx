@@ -98,10 +98,12 @@ export function DeviceCard(props: { entry: DeviceEntry; actions?: CardActions; e
     names().filter(name => ["boolean", "number", "integer", "string"].includes(String(props.entry.device.attributes![name].schema.type))).slice(0, 2);
   const secondary = () => names().filter(name => !primary().includes(name));
   const name = () => props.entry.device.name || props.entry.device.id;
-  return <article class="panel widget-card" aria-label={name()}>
+  const title = () => isReceiver() ? props.entry.service_name || "Onkyo receiver" : name();
+  return <article class={isReceiver() ? "panel widget-card widget-receiver" : "panel widget-card"}
+    aria-label={isReceiver() ? title() + " · " + name() : name()}>
     <header class="widget-header"><span class={profile() && props.entry.state.power?.value === true ? "widget-icon widget-active" : "widget-icon"}><DeviceIcon icon={profile()?.icon ?? "device"} /></span>
-      <div><h3>{name()}</h3>
-        <small>{props.entry.service_name}{isReceiver() ? " · AV receiver" : ""}</small>
+      <div><h3>{title()}</h3>
+        <small>{isReceiver() ? "AV receiver · " + name() : props.entry.service_name}</small>
         <Show when={props.entry.device.location?.length}><small class="widget-location">{props.entry.device.location?.join(" / ")}</small></Show>
       </div></header>
     <For each={primary()}>{attribute => <CardAttribute entry={props.entry} name={attribute} actions={props.actions} />}</For>

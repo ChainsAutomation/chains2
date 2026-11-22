@@ -316,9 +316,11 @@ test("receiver cards identify the service and show AV controls across locations"
   await page.getByRole("button", { name: "Sign in" }).click();
   const group = page.locator(".device-groups > section").filter({ has: page.getByRole("heading", { name: "Onkyo TX-NR696", exact: true }) });
   await expect(group.getByRole("article")).toHaveCount(2);
-  await expect(group.getByRole("heading", { level: 3 })).toHaveText(["Main", "Zone 2"]);
-  const main = group.getByRole("article", { name: "Main", exact: true });
-  await expect(main.getByText("Onkyo TX-NR696 · AV receiver")).toBeVisible();
+  await expect(group.getByRole("article").nth(0)).toHaveAccessibleName("Onkyo TX-NR696 · Main");
+  await expect(group.getByRole("article").nth(1)).toHaveAccessibleName("Onkyo TX-NR696 · Zone 2");
+  const main = group.getByRole("article", { name: "Onkyo TX-NR696 · Main", exact: true });
+  await expect(main.getByRole("heading", { level: 3, name: "Onkyo TX-NR696", exact: true })).toBeVisible();
+  await expect(main.getByText("AV receiver · Main", { exact: true })).toBeVisible();
   await expect(main.getByText("Cave", { exact: true })).toBeVisible();
   for (const name of ["Input", "Volume", "Muted"]) {
     await expect(main.getByText(name, { exact: true })).toBeVisible();
