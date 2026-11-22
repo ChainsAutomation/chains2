@@ -54,4 +54,6 @@ The authority, fan, and sensor publish Chains messages to Redis. The sensor stil
 
 For a Python service, run the image with arguments such as `rflink -f /etc/chains/services/rflink.toml` or `radicale -f /etc/chains/services/home-dav.toml`, and mount the corresponding configuration. Set `CHAINS_BUS` to the broker address reachable inside the container. Mount persistent storage under `/var/lib/chains` for Radicale checkpoints. For RFLink or a USB keyboard, pass the single serial or input device with Docker's `--device` option and grant the container's user access to it. See the [Python services guide](services-python.md) and [Go SDK guide](sdk-go.md) for configuration.
 
+For Onkyo receivers, see the [standalone Go service example](onkyo.md#containers).
+
 For remote browser access, use HTTPS and the normal sign-in policy. The demo sets `CHAINS_OPERATOR_WEB_LOOPBACK_PROXY=true` because publishing a host loopback port can give the authority a non-loopback TCP peer. Keep that setting scoped to local forwarding setups and see the [web console guide](operator-web.md) for proxy configuration.

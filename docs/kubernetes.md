@@ -52,6 +52,8 @@ For remote access, route the operator Service through your HTTPS ingress or reve
 
 Run each additional integration in its own Deployment. Give it a stable service ID, the same bus and namespace, and only the secrets it uses. Mount its configuration from a ConfigMap or Secret and a dedicated volume if it keeps local state. For a separate rules worker, use the Go image with `engine`, a unique `-id`, `-authority engine`, and its own rule files with operator HTTP disabled. Install each action-producing rule on one engine. The [concurrency guide](rules-engine-concurrency.md#splitting-work-across-engine-processes) describes how workers synchronize state.
 
+The [Onkyo service](onkyo.md#containers) uses a separate Deployment with LAN access to the receiver.
+
 ## Schedule an integration on a hardware node
 
 Label the machine that has the RFLink USB gateway:

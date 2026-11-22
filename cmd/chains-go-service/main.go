@@ -13,9 +13,18 @@ import (
 
 	"chains-automation/sdk"
 	"chains-automation/services/keyboard"
+	"chains-automation/services/onkyo"
 )
 
 var registry = map[string]func(context.Context, []string) error{
+	"onkyo": func(ctx context.Context, args []string) error {
+		settings := onkyo.DefaultSettings()
+		config, err := sdk.LoadConfig("onkyo", args, &settings)
+		if err != nil {
+			return err
+		}
+		return sdk.RunService(ctx, config, onkyo.Definition(settings))
+	},
 	"keyboard": func(ctx context.Context, args []string) error {
 		settings := keyboard.DefaultSettings()
 		config, err := sdk.LoadConfig("keyboard", args, &settings)

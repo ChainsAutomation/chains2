@@ -116,3 +116,7 @@ Grant the service user read access to the selected evdev node. A stable device p
 ```text
 ev = Event(type="keyboard.key", action=press, key=KEY_F13)
 ```
+
+## Bundled Onkyo receiver
+
+Use `chains-go-service onkyo` to control a TX-NR696 over the local network. See the [Onkyo guide](onkyo.md) for setup, Zone 2 options, and automation examples.

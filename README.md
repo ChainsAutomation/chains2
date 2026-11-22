@@ -147,4 +147,4 @@ Start a service with `chains-service MODULE:CLASS`. The [Python SDK reference](d
 
 ## Author a Go service
 
-The [Go SDK guide](docs/sdk-go.md) covers the managed runtime, configuration, and the bundled USB keyboard service.
+The [Go SDK guide](docs/sdk-go.md) covers the managed runtime, configuration, and the bundled USB keyboard service. See the [Onkyo receiver guide](docs/onkyo.md) for local receiver control.

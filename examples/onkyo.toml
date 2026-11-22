@@ -1,0 +1,10 @@
+[service]
+name = "Home receiver"
+
+[settings]
+host = "onkyo.lan"
+# zone2_mode = "external"
+
+[settings.main]
+location = ["House", "Living room"]
+tags = ["audio"]
