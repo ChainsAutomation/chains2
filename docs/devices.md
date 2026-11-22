@@ -1,6 +1,6 @@
 # Device locations and tags
 
-Open **All Devices** in the web console for a dashboard grouped by location. Devices from different services appear together when their locations match. Select a location in the tree to include its descendants, or choose **Unassigned** for devices without a location. Cards show reported values and typed controls for writable attributes. The same cards appear on [household dashboards](household-dashboards.md). [Operator web console](operator-web.md)
+**All Devices** groups cards by service, ordered by service name and then device name. Select a location or apply a location pattern to group matching devices by location across services. Cards show the service name alongside the device name and location. Onkyo receiver zones show power, input, volume, and mute where available. The same cards appear on [household dashboards](household-dashboards.md).
 
 ## Assign locations and tags
 

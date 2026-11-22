@@ -17,6 +17,8 @@ export const deviceKey = (entry: DeviceEntry) => entry.service_id + "/" + entry.
 export const controlKey = (request: Omit<SetRequest, "value">) => [request.service_id, request.device_id, request.attribute].join("/");
 export const lines = (value: string) => value.split("\n").map(v => v.trim()).filter(Boolean);
 
+const receiverProfile = { icon: "receiver", primary: ["power", "input", "volume", "muted"] };
+
 const cardProfiles = [
   { class: "dimmer", icon: "bulb", primary: ["power", "dimlevel"] },
   { class: "light", icon: "bulb", primary: ["power"] },
@@ -27,6 +29,7 @@ function DeviceIcon(props: { icon: string }) {
   return <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
     <Switch fallback={<path d="M7 7h10v10H7zM4 9h3m-3 6h3m10-6h3m-3 6h3M9 4v3m6-3v3M9 17v3m6-3v3" />}>
       <Match when={props.icon === "bulb"}><path d="M9 18h6m-5 3h4m1-6c0-2 3-3 3-7a6 6 0 1 0-12 0c0 4 3 5 3 7z" /></Match>
+      <Match when={props.icon === "receiver"}><path d="M3 6h18v12H3zM6 10h7v4H6zM6 20h2m8 0h2" /><circle cx="17" cy="12" r="2" /></Match>
       <Match when={props.icon === "power"}><path d="M12 3v8M6.3 6.3a8 8 0 1 0 11.4 0" /></Match>
     </Switch>
   </svg>;
@@ -88,7 +91,8 @@ function CardAttribute(props: { entry: DeviceEntry; name: string; actions?: Card
 }
 
 export function DeviceCard(props: { entry: DeviceEntry; actions?: CardActions; edit?: () => void; children?: JSX.Element }) {
-  const profile = () => cardProfiles.find(p => props.entry.device.classes.includes(p.class));
+  const isReceiver = () => props.entry.service_type === "onkyo" && !!props.entry.device.attributes?.power;
+  const profile = () => isReceiver() ? receiverProfile : cardProfiles.find(p => props.entry.device.classes.includes(p.class));
   const names = () => Object.keys(props.entry.device.attributes ?? {}).sort();
   const primary = () => profile()?.primary.filter(name => names().includes(name)) ??
     names().filter(name => ["boolean", "number", "integer", "string"].includes(String(props.entry.device.attributes![name].schema.type))).slice(0, 2);
@@ -96,7 +100,10 @@ export function DeviceCard(props: { entry: DeviceEntry; actions?: CardActions; e
   const name = () => props.entry.device.name || props.entry.device.id;
   return <article class="panel widget-card" aria-label={name()}>
     <header class="widget-header"><span class={profile() && props.entry.state.power?.value === true ? "widget-icon widget-active" : "widget-icon"}><DeviceIcon icon={profile()?.icon ?? "device"} /></span>
-      <div><h3>{name()}</h3><small>{props.entry.device.location?.join(" / ") || props.entry.service_name}</small></div></header>
+      <div><h3>{name()}</h3>
+        <small>{props.entry.service_name}{isReceiver() ? " · AV receiver" : ""}</small>
+        <Show when={props.entry.device.location?.length}><small class="widget-location">{props.entry.device.location?.join(" / ")}</small></Show>
+      </div></header>
     <For each={primary()}>{attribute => <CardAttribute entry={props.entry} name={attribute} actions={props.actions} />}</For>
     <Show when={secondary().length}><details><summary>More details</summary>
       <For each={secondary()}>{attribute => <CardAttribute entry={props.entry} name={attribute} actions={props.actions} />}</For>

@@ -207,6 +207,9 @@ test("Devices groups across services and edits placement without changing contro
   const sensor = page.getByRole("article", { name: "bathroom-sensor", exact: true });
   await expect(fan).toBeVisible();
   await expect(sensor).toBeVisible();
+  const deviceGroups = page.locator(".device-groups > section");
+  await expect(deviceGroups.filter({ has: fan }).getByRole("heading", { name: "Simulated fan", exact: true })).toBeVisible();
+  await expect(deviceGroups.filter({ has: sensor }).getByRole("heading", { name: "MQTT sensor", exact: true })).toBeVisible();
   for (const card of [fan, sensor]) {
     await card.getByRole("button", { name: "Edit placement" }).click();
     await card.getByLabel("Location segments").fill("House\nBedroom\nShelf.1");
@@ -230,8 +233,9 @@ test("Devices groups across services and edits placement without changing contro
   await expect(power).toHaveAttribute("aria-checked", before === "true" ? "false" : "true");
   await fan.getByRole("button", { name: "Edit placement" }).click();
   await fan.getByRole("button", { name: "Reset location" }).click();
-  await page.getByRole("button", { name: "All locations", exact: true }).click();
+  await page.getByRole("button", { name: "Unassigned", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Unassigned", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "All locations", exact: true }).click();
   await expect(fan).toBeVisible();
   await expect(sensor).toBeVisible();
 });
@@ -279,4 +283,38 @@ test("household can browse and control registered devices", async ({ page, brows
     await household.reload();
     await expect(household.getByRole("heading", { name: "Household test" })).toBeVisible();
   } finally { await household.close(); }
+});
+
+test("receiver cards identify the service and show AV controls across locations", async ({ page }) => {
+  const service = "receiver-fixture";
+  const boolean = { type: "boolean" };
+  const power = { schema: boolean, setter: { action: "set_power", schema_version: "1", argument: "value" } };
+  const zone = (id: string, name: string, location: string[]) => ({
+    id, name, location, classes: ["toggle"], actions: ["set_power"],
+    attributes: {
+      power, input: { schema: { type: "string" }, label: "Input" },
+      volume: { schema: { type: "integer" }, label: "Volume" },
+      muted: { schema: boolean, label: "Muted" },
+    },
+  });
+  execFileSync("mosquitto_pub", ["-p", process.env.CHAINS_WEB_TEST_MQTT_PORT ?? "18883", "-q", "1",
+    "-t", "web-fixture/msg/service.registered/" + service + "/_", "-m", JSON.stringify({
+      version: 3, source: service, type: "service.registered", id: "receiver-reg", observed_at: new Date().toISOString(),
+      data: { uuid: service, name: "Onkyo TX-NR696", service_type: "onkyo", events: {},
+        devices: [zone("zone2", "Zone 2", ["Workshop"]), zone("main", "Main", ["Cave"])],
+        actions: { set_power: { "1": { type: "object", required: ["value"], properties: { value: boolean } } } },
+      },
+    })]);
+  await page.goto("/devices");
+  await page.getByLabel("Access token").fill("web-fixture-household");
+  await page.getByRole("button", { name: "Sign in" }).click();
+  const group = page.locator(".device-groups > section").filter({ has: page.getByRole("heading", { name: "Onkyo TX-NR696", exact: true }) });
+  await expect(group.getByRole("article")).toHaveCount(2);
+  await expect(group.getByRole("heading", { level: 3 })).toHaveText(["Main", "Zone 2"]);
+  const main = group.getByRole("article", { name: "Main", exact: true });
+  await expect(main.getByText("Onkyo TX-NR696 · AV receiver")).toBeVisible();
+  await expect(main.getByText("Cave", { exact: true })).toBeVisible();
+  for (const name of ["Input", "Volume", "Muted"]) {
+    await expect(main.getByText(name, { exact: true })).toBeVisible();
+  }
 });

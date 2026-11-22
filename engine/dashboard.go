@@ -134,7 +134,7 @@ func dashboardDevices(snapshot state.Snapshot) []deviceEntry {
 					values[name] = value
 				}
 			}
-			entries = append(entries, deviceEntry{service.UUID, service.Name, d, values})
+			entries = append(entries, deviceEntry{service.UUID, service.Name, service.ServiceType, d, values})
 		}
 	}
 	slices.SortFunc(entries, compareDeviceEntries)

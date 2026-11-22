@@ -17,7 +17,7 @@ export interface Attribute { schema: Schema; label?: string; description?: strin
 export const attributeLabel = (id: string, attr?: Attribute) => attr?.label || id.replaceAll("_", " ");
 export interface Device { id: string; name: string; classes: string[]; location?: string[]; tags?: string[]; description?: string; attributes?: Record<string, Attribute>; actions?: string[] }
 export type Reading = { value: Json; observed_at: string; changed_at: string; revision: number };
-export type DeviceEntry = { service_id: string; service_name: string; device: Device; state: Record<string, Reading> };
+export type DeviceEntry = { service_id: string; service_name: string; service_type: string; device: Device; state: Record<string, Reading> };
 export type DeviceList = { revision: number; devices: DeviceEntry[] };
 export type SetRequest = { service_id: string; device_id: string; attribute: string; value: Json };
 export type SetReceipt = { action_id: string; correlation_id: string; status: "sent" };

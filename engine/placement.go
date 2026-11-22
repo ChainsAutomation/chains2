@@ -110,6 +110,7 @@ func (e *Engine) deviceRoutes(mux *http.ServeMux, auth func(http.HandlerFunc) ht
 type deviceEntry struct {
 	ServiceID   string                     `json:"service_id"`
 	ServiceName string                     `json:"service_name"`
+	ServiceType string                     `json:"service_type"`
 	Device      chains.Device              `json:"device"`
 	State       map[string]state.Attribute `json:"state"`
 }
@@ -149,7 +150,7 @@ func (e *Engine) listDevices(w http.ResponseWriter, r *http.Request) {
 					values[name] = v
 				}
 			}
-			entries = append(entries, deviceEntry{service.UUID, service.Name, d, values})
+			entries = append(entries, deviceEntry{service.UUID, service.Name, service.ServiceType, d, values})
 		}
 	}
 	slices.SortFunc(entries, compareDeviceEntries)

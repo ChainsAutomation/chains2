@@ -1,11 +1,10 @@
 import { createMemo, createSignal, For, Show } from "solid-js";
 import { jsonBody, type DeviceEntry } from "./api";
-import { DeviceCard, type CardActions } from "./home";
+import { DeviceCard, deviceKey as key, type CardActions } from "./home";
 import { Button, Empty, Heading, options, Picker } from "./components";
 
 type Scope = { path?: string[]; pattern?: string; unassigned?: boolean; tags: string[]; deviceClass: string };
 type LocationNode = { name: string; path: string[]; children: Map<string, LocationNode> };
-const key = (item: DeviceEntry) => item.service_id + "/" + item.device.id;
 const locationKey = (path?: string[]) => JSON.stringify(path ?? []);
 const splitLines = (value: string) => value.split("\n").map(part => part.trim()).filter(Boolean);
 
@@ -74,12 +73,20 @@ export function DevicesView(props: { entries?: DeviceEntry[]; operator: boolean;
     });
   });
   const byID = createMemo(() => new Map(visible().map(entry => [key(entry), entry])));
+  const byLocation = () => !!(scope().path || scope().pattern || scope().unassigned);
   const groups = createMemo(() => {
-    const grouped = new Map<string, string[]>();
-    for (const entry of visible()) {
-      const location = locationKey(entry.device.location);
-      const group = grouped.get(location) ?? [];
-      group.push(key(entry)); grouped.set(location, group);
+    const grouped = new Map<string, { title: string; devices: string[] }>();
+    const ordered = [...visible()].sort((a, b) =>
+      a.service_name.localeCompare(b.service_name) || a.service_id.localeCompare(b.service_id) ||
+      (a.device.name || a.device.id).localeCompare(b.device.name || b.device.id) || a.device.id.localeCompare(b.device.id));
+    for (const entry of byLocation() ? visible() : ordered) {
+      const groupID = byLocation() ? locationKey(entry.device.location) : entry.service_id;
+      let group = grouped.get(groupID);
+      if (!group) {
+        group = { title: byLocation() ? entry.device.location?.join(" › ") || "Unassigned" : entry.service_name || entry.service_id, devices: [] };
+        grouped.set(groupID, group);
+      }
+      group.devices.push(key(entry));
     }
     return grouped;
   });
@@ -131,11 +138,10 @@ export function DevicesView(props: { entries?: DeviceEntry[]; operator: boolean;
       <div class="device-groups">
         <Show when={visible().length} fallback={<Empty title={props.entries ? "No matching devices" : "Loading devices…"} />}>
           <For each={[...groups().keys()]}>{group => {
-            const path = JSON.parse(group) as string[];
             return <section>
-              <h2>{path.join(" › ") || "Unassigned"}</h2>
+              <h2>{groups().get(group)?.title}</h2>
               <div class="widget-grid">
-                <For each={groups().get(group) ?? []}>{id => {
+                <For each={groups().get(group)?.devices ?? []}>{id => {
                   const entry = () => byID().get(id)!;
                   return <DeviceCard entry={entry()} actions={props.actions} edit={props.operator ? () => edit(entry()) : undefined}>
                     <Show when={editing() === id}>
