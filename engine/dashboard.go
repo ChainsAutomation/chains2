@@ -11,7 +11,6 @@ import (
 	"time"
 
 	chains "chains-automation"
-	"chains-automation/operator"
 	"chains-automation/rules"
 	"chains-automation/state"
 )
@@ -197,7 +196,7 @@ func dashboardBody(w http.ResponseWriter, r *http.Request, target any) bool {
 }
 
 func (e *Engine) dashboardRoutes(mux *http.ServeMux, sessions *browserSessions, loopbackProxy bool) {
-	const base = operator.Base + "/home"
+	const base = householdBase + "/dashboard"
 	handle := func(pattern string, operatorOnly bool, next func(http.ResponseWriter, *http.Request, bool)) {
 		mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Cache-Control", "no-store")
@@ -313,7 +312,25 @@ func (e *Engine) dashboardRoutes(mux *http.ServeMux, sessions *browserSessions, 
 		}
 		writeJSON(w, 200, resolveDashboard(req.Board, dashboardDevices(e.view.Snapshot(), req.Household), req.Household))
 	})
-	handle("POST "+base+"/actions", false, e.dashboardAction)
+	handle("POST "+householdBase+"/actions", false, e.dashboardAction)
+	handle("PATCH "+householdBase+"/devices/{service}/{device}/sharing", true, func(w http.ResponseWriter, r *http.Request, _ bool) {
+		var body struct {
+			Shared *bool `json:"shared"`
+		}
+		if !dashboardBody(w, r, &body) {
+			return
+		}
+		if body.Shared == nil {
+			http.Error(w, "provide shared", 400)
+			return
+		}
+		service := r.PathValue("service")
+		if service == chains.OperatorService {
+			http.NotFound(w, r)
+			return
+		}
+		e.submitPlacement(w, r, placementEdit{ctx: r.Context(), service: service, device: r.PathValue("device"), householdShared: body.Shared, done: make(chan error, 1)})
+	})
 }
 
 func (e *Engine) dashboardAction(w http.ResponseWriter, r *http.Request, household bool) {

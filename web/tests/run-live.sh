@@ -41,7 +41,7 @@ for ((i=0; i<50; i++)); do
   sleep .1
 done
 "$temp_dir/chains" engine -config "$temp_dir/engine.json" -database :memory: -web-rules-dir "$temp_dir/web-rules" -rules "$temp_dir/manual.chains" \
-  -listen "127.0.0.1:$web_port" -operator-api -operator-trace -operator-web > "$temp_dir/engine.log" 2>&1 &
+  -listen "127.0.0.1:$web_port" -operator-api -operator-trace -operator-web -household-web > "$temp_dir/engine.log" 2>&1 &
 pids+=($!)
 for ((i=0; i<50; i++)); do
   if curl -fsS "$CHAINS_WEB_TEST_URL/ui/" >/dev/null 2>&1; then break; fi

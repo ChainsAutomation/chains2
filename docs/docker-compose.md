@@ -7,7 +7,7 @@ docker build -f deploy/go.Dockerfile -t chains:dev .
 docker build -f deploy/python.Dockerfile -t chains-python:dev .
 ```
 
-The Go image includes `chains`, the embedded operator web console, `chainsctl`, and `chains-go-service`. The default command runs the authority. The Python image includes the bundled services and their locked RFLink and Radicale dependencies. Both images run as UID and GID 10001. Give that user access to any mounted state directory.
+The Go image includes `chains`, the embedded operator console and household web app, `chainsctl`, and `chains-go-service`. The default command runs the authority. The Python image includes the bundled services and their locked RFLink and Radicale dependencies. Both images run as UID and GID 10001. Give that user access to any mounted state directory.
 
 To publish images, substitute your registry and release tag below. Build for the architecture of your Kubernetes nodes. On mixed-architecture clusters, use Buildx with the relevant platforms.
 

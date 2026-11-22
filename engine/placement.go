@@ -90,26 +90,31 @@ func (e *Engine) deviceRoutes(mux *http.ServeMux, auth func(http.HandlerFunc) ht
 			return
 		}
 		edit := placementEdit{r.Context(), r.PathValue("service"), r.PathValue("device"), body.Location, body.Tags, body.HouseholdShared, make(chan error, 1)}
-		select {
-		case e.placementEdits <- edit:
-		case <-r.Context().Done():
-			return
-		}
-		select {
-		case <-r.Context().Done():
-			return
-		case err := <-edit.done:
-			if err != nil {
-				status := http.StatusBadRequest
-				if errors.Is(err, state.ErrUnknownDevice) {
-					status = http.StatusNotFound
-				}
-				http.Error(w, err.Error(), status)
-				return
-			}
-			w.WriteHeader(http.StatusNoContent)
-		}
+		e.submitPlacement(w, r, edit)
 	}))
+}
+
+func (e *Engine) submitPlacement(w http.ResponseWriter, r *http.Request, edit placementEdit) {
+
+	select {
+	case e.placementEdits <- edit:
+	case <-r.Context().Done():
+		return
+	}
+	select {
+	case <-r.Context().Done():
+		return
+	case err := <-edit.done:
+		if err != nil {
+			status := http.StatusBadRequest
+			if errors.Is(err, state.ErrUnknownDevice) {
+				status = http.StatusNotFound
+			}
+			http.Error(w, err.Error(), status)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
 }
 
 type deviceEntry struct {

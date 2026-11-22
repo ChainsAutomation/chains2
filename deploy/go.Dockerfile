@@ -3,6 +3,7 @@ WORKDIR /src/web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci
 COPY web/index.html web/tsconfig.json web/vite.config.ts web/playwright.config.ts ./
+COPY web/ui ./ui
 COPY web/src ./src
 RUN npm run build
 

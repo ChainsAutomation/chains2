@@ -31,6 +31,7 @@ type config struct {
 	Week                     string                       `json:"week"`
 	Scheduler                bool                         `json:"scheduler"`
 	OperatorWebLoopbackProxy bool                         `json:"operator_web_loopback_proxy"`
+	HouseholdWeb             bool                         `json:"household_web"`
 	OperatorWeb              bool                         `json:"operator_web"`
 	OperatorAPI              bool                         `json:"operator_api"`
 	OperatorTrace            bool                         `json:"operator_trace"`
@@ -66,6 +67,7 @@ func readConfig(args []string) (config, error) {
 	z2mEnabled := f.Bool("z2m-enabled", false, "enable the Zigbee2MQTT bridge")
 	scheduler := f.Bool("scheduler", c.Scheduler, "enable calendar rules")
 	operatorWebLoopbackProxy := f.Bool("operator-web-loopback-proxy", false, "allow loopback browser origins through container forwarding")
+	householdWeb := f.Bool("household-web", false, "serve the bundled household app")
 	operatorWeb := f.Bool("operator-web", false, "serve the bundled web console")
 	operatorAPI := f.Bool("operator-api", false, "enable the authority operator API")
 	operatorTrace := f.Bool("operator-trace", false, "emit rule lifecycle telemetry")
@@ -112,6 +114,8 @@ func readConfig(args []string) (config, error) {
 			c.Scheduler = *scheduler
 		case "operator-web-loopback-proxy":
 			c.OperatorWebLoopbackProxy = *operatorWebLoopbackProxy
+		case "household-web":
+			c.HouseholdWeb = *householdWeb
 		case "operator-web":
 			c.OperatorWeb = *operatorWeb
 		case "operator-api":
@@ -130,7 +134,7 @@ func readConfig(args []string) (config, error) {
 			*ptr = value
 		}
 	}
-	for name, ptr := range map[string]*bool{"CHAINS_Z2M_ENABLED": &c.Z2M.Enabled, "CHAINS_SCHEDULER": &c.Scheduler, "CHAINS_DEBUG": &c.Debug, "CHAINS_OPERATOR_WEB_LOOPBACK_PROXY": &c.OperatorWebLoopbackProxy, "CHAINS_OPERATOR_WEB": &c.OperatorWeb, "CHAINS_OPERATOR_API": &c.OperatorAPI, "CHAINS_OPERATOR_TRACE": &c.OperatorTrace} {
+	for name, ptr := range map[string]*bool{"CHAINS_Z2M_ENABLED": &c.Z2M.Enabled, "CHAINS_SCHEDULER": &c.Scheduler, "CHAINS_DEBUG": &c.Debug, "CHAINS_OPERATOR_WEB_LOOPBACK_PROXY": &c.OperatorWebLoopbackProxy, "CHAINS_OPERATOR_WEB": &c.OperatorWeb, "CHAINS_HOUSEHOLD_WEB": &c.HouseholdWeb, "CHAINS_OPERATOR_API": &c.OperatorAPI, "CHAINS_OPERATOR_TRACE": &c.OperatorTrace} {
 		if value, ok := os.LookupEnv(name); ok {
 			if err := json.Unmarshal([]byte(value), ptr); err != nil {
 				return c, fmt.Errorf("%s: %w", name, err)

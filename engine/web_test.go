@@ -27,8 +27,8 @@ func TestWebConsole(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer e.Close()
-	assets := fstest.MapFS{"index.html": {Data: []byte("Chains UI")}, "assets/app.js": {Data: []byte("export {}")}}
-	handler := e.WebHTTP("secret", nil, assets, false, "family")
+	assets := fstest.MapFS{"ui/index.html": {Data: []byte("Chains Operator")}, "index.html": {Data: []byte("Chains Household")}, "assets/app.js": {Data: []byte("export {}")}}
+	handler := e.WebHTTP("secret", nil, assets, WebOptions{Operator: true, Household: true, HouseholdToken: "family"})
 	call := func(h http.Handler, method, path, origin, body, bearer string, cookie *http.Cookie, want int) *httptest.ResponseRecorder {
 		t.Helper()
 		req := httptest.NewRequest(method, "http://127.0.0.1"+path, strings.NewReader(body))
@@ -49,11 +49,28 @@ func TestWebConsole(t *testing.T) {
 		}
 		return recorder
 	}
+	for path, marker := range map[string]string{"/": "Chains Household", "/devices": "Chains Household", "/dashboards/main": "Chains Household", "/admin": "Chains Household", "/ui/": "Chains Operator", "/ui/state": "Chains Operator"} {
+		if got := call(handler, "GET", path, "", "", "", nil, 200).Body.String(); got != marker {
+			t.Fatalf("%s returned %q, want %q", path, got, marker)
+		}
+	}
+	call(handler, "GET", "/ui/dashboard-builder", "", "", "", nil, 404)
+	operatorOnly := e.WebHTTP("secret", nil, assets, WebOptions{Operator: true})
+	call(operatorOnly, "GET", "/", "", "", "", nil, 404)
+	householdOnly := e.WebHTTP("secret", nil, assets, WebOptions{Household: true})
+	call(householdOnly, "GET", "/ui/", "", "", "", nil, 404)
+	call(handler, "POST", operator.Base+"/session", "http://127.0.0.1", `{"token":"family"}`, "", nil, 401)
+	family := call(handler, "POST", householdBase+"/session", "http://127.0.0.1", `{"token":"family"}`, "", nil, 200).Result().Cookies()[0]
+	if family.Path != householdBase || family.Name == sessionCookie {
+		t.Fatalf("household cookie scope: %s %s", family.Name, family.Path)
+	}
+	call(handler, "GET", operator.Base+"/session", "", "", "", family, 401)
+
 	path := operator.Base
 	call(e.HTTP("secret", nil), "GET", "/ui/", "", "", "", nil, 404)
 	call(handler, "GET", "/ui/", "", "", "", nil, 200)
 	call(handler, "GET", "/ui/trace?correlation=abc", "", "", "", nil, 200)
-	call(handler, "GET", "/ui/assets/app.js", "", "", "", nil, 200)
+	call(handler, "GET", "/assets/app.js", "", "", "", nil, 200)
 	call(handler, "GET", path+"/unknown", "", "", "", nil, 404)
 	call(handler, "GET", path+"/services", "", "", "", nil, 401)
 	call(handler, "POST", path+"/session", "https://unrelated.example", `{"token":"secret"}`, "", nil, 403)
@@ -111,7 +128,7 @@ func TestBrowserOrigin(t *testing.T) {
 func TestExpiredBrowserSession(t *testing.T) {
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer cancel()
-	s := browserSessions{sessions: map[string]browserSession{"expired": {ctx, cancel, "operator"}}}
+	s := browserSessions{cookie: sessionCookie, sessions: map[string]browserSession{"expired": {ctx, cancel, "operator"}}}
 	req := httptest.NewRequest("GET", "/operator/v1/session", nil)
 	req.AddCookie(&http.Cookie{Name: sessionCookie, Value: "expired"})
 	if _, ok := s.lookup(req); ok {

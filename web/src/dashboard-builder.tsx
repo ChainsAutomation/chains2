@@ -28,7 +28,7 @@ export function DashboardBuilder(props: { api: API; devices: DeviceEntry[]; refr
   async function load() {
     setBusy(true); setError("");
     try {
-      const saved = await props.api<Catalog>("/home/config", { signal: lifetime.signal });
+      const saved = await props.api<Catalog>("/dashboard/config", { signal: lifetime.signal });
       setDraft(saved); setDirty(false); setPreview(undefined);
       if (!saved.dashboards.some(d => d.id === selected())) setSelected(saved.dashboards[0]?.id ?? "");
     } catch (err) { if (!lifetime.signal.aborted) setError((err as Error).message); }
@@ -60,7 +60,7 @@ export function DashboardBuilder(props: { api: API; devices: DeviceEntry[]; refr
   async function save() {
     setBusy(true); setError("");
     try {
-      const saved = await props.api<Catalog>("/home/config", { ...jsonBody("PUT", draft()), signal: lifetime.signal });
+      const saved = await props.api<Catalog>("/dashboard/config", { ...jsonBody("PUT", draft()), signal: lifetime.signal });
       setDraft(saved); setDirty(false); props.refresh();
     } catch (err) { if (!lifetime.signal.aborted) setError((err as Error).message); }
     finally { setBusy(false); }
@@ -71,7 +71,7 @@ export function DashboardBuilder(props: { api: API; devices: DeviceEntry[]; refr
     previewRequest = controller;
     setError("");
     try {
-      const rendered = await props.api<Layout>("/home/preview", {
+      const rendered = await props.api<Layout>("/dashboard/preview", {
         ...jsonBody("POST", { dashboard: board(), household: household() }), signal: controller.signal,
       });
       if (!controller.signal.aborted) setPreview(rendered);

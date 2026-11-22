@@ -46,11 +46,14 @@ export class HTTPError extends Error {
   constructor(readonly status: number, message: string) { super(message); }
 }
 const base = "/operator/v1";
-export async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const response = await fetch(base + path, { cache: "no-store", ...options });
-  if (!response.ok) throw new HTTPError(response.status, (await response.text()).trim() || response.statusText);
-  return (response.status === 204 ? undefined : await response.json()) as T;
+export function requestAt(prefix: string) {
+  return async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+    const response = await fetch(prefix + path, { cache: "no-store", ...options });
+    if (!response.ok) throw new HTTPError(response.status, (await response.text()).trim() || response.statusText);
+    return (response.status === 204 ? undefined : await response.json()) as T;
+  };
 }
+export const request = requestAt(base);
 export function query(path: string, fields: Record<string, string>) {
   return path + "?" + new URLSearchParams(Object.entries(fields).filter(([, value]) => value));
 }

@@ -2,7 +2,7 @@ import { createMemo, createSignal, For, Match, Show, Switch } from "solid-js";
 import type { JSX } from "@solidjs/web";
 import { attributeLabel, type DeviceEntry, type Json, type SetRequest } from "./api";
 import { Button, Empty, Heading, jsonText } from "./components";
-import { Argument } from "./rule-form";
+import { Argument } from "./argument";
 
 export type API = <T>(path: string, init?: RequestInit) => Promise<T>;
 export type Block = { id: string; kind: "device" | "group" | "separator"; title?: string;
@@ -126,8 +126,8 @@ export function DashboardView(props: { id: string; home?: Home; actions: CardAct
   const board = () => props.home?.dashboards.find(b => b.id === (props.id || props.home?.home_id));
   return <Show when={props.home} fallback={<Empty title="Loading dashboards…" />}>
     <Show when={board()} fallback={<Empty title={props.id ? "Dashboard unavailable" : "Home"}>
-      <div class="toolbar"><a class="button" href="/ui/devices">Browse devices</a>
-        <Show when={props.operator}><a class="button" href="/ui/dashboard-builder">Open dashboard builder</a></Show></div>
+      <div class="toolbar"><a class="button" href="/devices">Browse devices</a>
+        <Show when={props.operator}><a class="button" href="/admin">Open dashboard builder</a></Show></div>
     </Empty>}>
       {layout => <><Heading title={layout().name} /><Show when={layout().blocks.some(b => b.devices.length || b.kind === "separator")} fallback={<Empty title="No cards yet" />}>
         <DashboardGrid layout={layout()} devices={props.home?.devices ?? []} actions={props.actions} />

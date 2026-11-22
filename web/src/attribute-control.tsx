@@ -1,7 +1,7 @@
 import { createSignal, Show } from "solid-js";
 import { attributeLabel, type Attribute, type Json, type SetRequest, type SetReceipt } from "./api";
 import { Button, jsonText } from "./components";
-import { Argument } from "./rule-form";
+import { Argument } from "./argument";
 
 export function AttributeControl(props: {
   descriptor: Attribute; service: string; device: string; name: string;

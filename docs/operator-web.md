@@ -18,7 +18,7 @@ Enable the console on the state authority. Set `CHAINS_TOKEN` to the operator to
 ./chains engine -listen 127.0.0.1:8080 -operator-api -operator-web -operator-trace
 ```
 
-Open `http://127.0.0.1:8080/ui/` and sign in with the token. Home and All Devices are in the top bar. The operator tools sit in a separate navigation section. See [Household dashboards](household-dashboards.md) for dashboard editing and household sign-in. The equivalent configuration settings are `operator_web` and `CHAINS_OPERATOR_WEB=true`. The console defaults to disabled. The Go binary serves all runtime assets. Builds without the `webui` tag still provide the CLI and operator API.
+Open `http://127.0.0.1:8080/ui/` and sign in with the token. The console opens on State. The standalone household app uses `/` and an independent session. See [Household dashboards](household-dashboards.md) for dashboard editing and household sign-in. The equivalent configuration settings are `operator_web` and `CHAINS_OPERATOR_WEB=true`. The console defaults to disabled. The Go binary serves all runtime assets. Builds without the `webui` tag still provide the CLI and operator API.
 
 For remote access, put the authority behind an HTTPS reverse proxy. Preserve the browser's original `Host` and disable buffering for `/operator/v1/activity`. HTTP sign-in is available over loopback. For a service reachable only through a loopback-bound Docker or Kubernetes forward, set `operator_web_loopback_proxy`, `-operator-web-loopback-proxy`, or `CHAINS_OPERATOR_WEB_LOOPBACK_PROXY=true`. This permits a matching loopback browser origin when the forwarding connection has a non-loopback peer address. The setting defaults to off and does not use forwarded headers. Browser sessions expire after eight hours and are cleared when the authority restarts. Sign out to revoke the current session. CLI clients continue to use the bearer token.
 
@@ -47,7 +47,7 @@ The authority stores each web rule as a `.chains` file in the generation named b
 
 ## Development and verification
 
-Run the authority with the bundled console enabled for browser sessions. Run `npm run dev --prefix web` and open the printed local address under `/ui/`. Vite proxies the operator API to `http://127.0.0.1:8080` by default. Set `CHAINS_WEB_DEV_TARGET` to use another local authority.
+Run the authority with the bundled console enabled for browser sessions. Run `npm run dev --prefix web` and open the printed local address under `/ui/`. Vite serves both app entry points and proxies both APIs to `http://127.0.0.1:8080` by default. Set `CHAINS_WEB_DEV_TARGET` to use another local authority.
 
 The browser suite starts a temporary authority, MQTT broker, and simulated integrations. The fixture uses ports 18080 and 18883 by default. Set `CHAINS_WEB_TEST_PORT` and `CHAINS_WEB_TEST_MQTT_PORT` if those ports are busy.
 

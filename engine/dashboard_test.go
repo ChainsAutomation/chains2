@@ -49,12 +49,12 @@ func TestDashboardRolesAndPersistence(t *testing.T) {
 	if _, err := authority.Register(register, service); err != nil {
 		t.Fatal(err)
 	}
-	handler := e.WebHTTP("operator", nil, fstest.MapFS{"index.html": {Data: []byte("web")}}, false, "family")
-	const base = "/operator/v1"
+	handler := e.WebHTTP("operator", nil, fstest.MapFS{"index.html": {Data: []byte("web")}, "ui/index.html": {Data: []byte("operator")}}, WebOptions{Operator: true, Household: true, HouseholdToken: "family"})
+	const base = householdBase
 	const origin = "http://127.0.0.1"
 	call := func(method, path, host, body string, cookie *http.Cookie, want int) *httptest.ResponseRecorder {
 		t.Helper()
-		r := httptest.NewRequest(method, origin+base+path, strings.NewReader(body))
+		r := httptest.NewRequest(method, origin+path, strings.NewReader(body))
 		r.RemoteAddr = "127.0.0.1:6543"
 		r.Header.Set("Origin", host)
 		if cookie != nil {
@@ -68,19 +68,19 @@ func TestDashboardRolesAndPersistence(t *testing.T) {
 		return w
 	}
 	login := func(token string) *http.Cookie {
-		return call("POST", "/session", origin, `{"token":"`+token+`"}`, nil, 200).Result().Cookies()[0]
+		return call("POST", base+"/session", origin, `{"token":"`+token+`"}`, nil, 200).Result().Cookies()[0]
 	}
 	op, family := login("operator"), login("family")
-	call("GET", "/home", "", "", nil, 401)
-	call("GET", "/home/config", "", "", family, 403)
-	call("GET", "/activity", "", "", family, 403)
-	call("GET", "/state", "", "", family, 403)
-	call("POST", "/actions", origin, "{}", family, 403)
-	call("PATCH", "/devices/fixture/private/placement", origin, `{"household_shared":true}`, family, 403)
+	call("GET", base+"/dashboard", "", "", nil, 401)
+	call("GET", base+"/dashboard/config", "", "", family, 403)
+	call("GET", "/operator/v1/activity", "", "", family, 404)
+	call("GET", "/operator/v1/state", "", "", family, 404)
+	call("POST", "/operator/v1/actions", origin, "{}", family, 404)
+	call("PATCH", base+"/devices/fixture/private/sharing", origin, `{"shared":true}`, family, 403)
 	target := `{"service_id":"fixture","device_id":"private","attribute":"power","value":true}`
-	call("POST", "/home/actions", "https://elsewhere.example", target, family, 403)
-	call("POST", "/home/actions", origin, target, family, 404)
-	if body := call("GET", "/home", "", "", family, 200).Body.String(); strings.Contains(body, "Private device") {
+	call("POST", base+"/actions", "https://elsewhere.example", target, family, 403)
+	call("POST", base+"/actions", origin, target, family, 404)
+	if body := call("GET", base+"/dashboard", "", "", family, 200).Body.String(); strings.Contains(body, "Private device") {
 		t.Fatalf("forged tag shared device: %s", body)
 	}
 	setSharing := func(value bool) {
@@ -93,18 +93,18 @@ func TestDashboardRolesAndPersistence(t *testing.T) {
 		}
 	}
 	setSharing(true)
-	if body := call("GET", "/home", "", "", family, 200).Body.String(); !strings.Contains(body, "Private device") {
+	if body := call("GET", base+"/dashboard", "", "", family, 200).Body.String(); !strings.Contains(body, "Private device") {
 		t.Fatalf("missing shared device: %s", body)
 	}
-	call("POST", "/home/actions", origin, target, family, 400) // It has no setter.
+	call("POST", base+"/actions", origin, target, family, 400) // It has no setter.
 	setSharing(false)
-	call("POST", "/home/actions", origin, target, family, 404)
+	call("POST", base+"/actions", origin, target, family, 404)
 
 	config := `{"version":1,"revision":0,"home_id":"home","dashboards":[{"id":"home","name":"Home","pinned":true,"blocks":[]}]}`
-	call("PUT", "/home/config", origin, config, family, 403)
-	call("PUT", "/home/config", "https://elsewhere.example", config, op, 403)
-	call("PUT", "/home/config", origin, config, op, 200)
-	call("PUT", "/home/config", origin, config, op, 409)
+	call("PUT", base+"/dashboard/config", origin, config, family, 403)
+	call("PUT", base+"/dashboard/config", "https://elsewhere.example", config, op, 403)
+	call("PUT", base+"/dashboard/config", origin, config, op, 200)
+	call("PUT", base+"/dashboard/config", origin, config, op, 409)
 	authority.Close()
 	authority, err = state.Open(path)
 	if err != nil {
