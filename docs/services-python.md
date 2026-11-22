@@ -101,3 +101,31 @@ if Has(ev.data, "power_w") and ev.data.power_w < -1000:
 ```
 
 The bundled Python container runs the same command with `tibber-pulse -f /etc/chains/services/home-meter.toml` as its arguments. See [Docker images](docker-compose.md) for the build command.
+
+## ntfy notifications
+
+Run `chains-service ntfy -f ntfy.toml`. The service publishes to your ntfy server and uses the standard SDK config precedence. Set the bearer token with `CHAINS_SETTINGS__TOKEN`. Use HTTPS for remote publishers and set topic permissions in ntfy. [ntfy authentication](https://docs.ntfy.sh/publish/#authentication)
+
+```toml
+[service]
+service_id = "ntfy"
+name = "ntfy"
+
+[settings]
+server_url = "https://ntfy.example.net"
+default_topic = "alerts"
+request_timeout = 5.0
+
+[settings.topics]
+alerts = "chains-alerts"
+```
+
+Use the `notifications` device and the `notify` action in a rule. `message` is required. Optional fields are `topic` (a configured alias), `title`, `priority` (1–5), `tags` (a list of strings), and `click` (an HTTP(S) URL).
+
+```text
+notifications = Device(service_id="ntfy", device_id="notifications")
+Event(type="calendar.alarm.due")
+Action("notify", device=notifications, title="Calendar reminder", message="An event is due")
+```
+
+The outcome contains the ntfy message ID, topic alias, and Unix timestamp in seconds. It confirms ntfy accepted the message. The publisher makes one HTTP attempt per action. A lost response can leave delivery uncertain. For legacy Pushover rules, move the destination to a configured topic, map the link to `click`, and choose an ntfy priority from 1 to 5.

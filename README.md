@@ -144,7 +144,7 @@ Retained device reports seed state without starting rules. Live button actions c
 
 ## Author a Python service
 
-Start a service with `chains-service MODULE:CLASS`. The [Python SDK reference](docs/sdk-python.md) covers configuration, lifecycle hooks, events, actions, state, and runnable examples. See [bundled services](docs/services-python.md) for RFLink, Frigate, Radicale, and Tibber Pulse.
+Start a service with `chains-service MODULE:CLASS`. The [Python SDK reference](docs/sdk-python.md) covers configuration, lifecycle hooks, events, actions, state, and runnable examples. See [bundled services](docs/services-python.md) for RFLink, Frigate, ntfy, Radicale, and Tibber Pulse.
 
 ## Author a Go service
 

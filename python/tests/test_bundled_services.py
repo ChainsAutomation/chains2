@@ -20,6 +20,7 @@ class BundledServicesTest(TestCase):
         with redirect_stdout(output):
             main(["--list"])
         self.assertIn("frigate", output.getvalue().splitlines())
+        self.assertIn("ntfy", output.getvalue().splitlines())
         self.assertIn("rflink", output.getvalue().splitlines())
         self.assertIn("radicale", output.getvalue().splitlines())
         self.assertIn("tibber-pulse", output.getvalue().splitlines())
