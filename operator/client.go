@@ -29,7 +29,7 @@ func NewClient(address, token string) (*Client, error) {
 		return nil, errors.New("operator URL must be an HTTP or HTTPS base URL")
 	}
 	if token == "" {
-		return nil, errors.New("set CHAINS_OPERATOR_TOKEN")
+		return nil, errors.New("configure an operator token or set CHAINS_OPERATOR_TOKEN")
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.ResponseHeaderTimeout = 10 * time.Second

@@ -10,7 +10,6 @@ import (
 	"io"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -33,7 +32,7 @@ func main() {
 
 func run(ctx context.Context, args []string, in io.Reader, out, diagnostics io.Writer) error {
 	usage := func() {
-		fmt.Fprintln(diagnostics, "Usage: chainsctl {state|describe|watch|send|tui} [options]\nSet CHAINS_OPERATOR_TOKEN and optionally CHAINS_OPERATOR_URL.")
+		fmt.Fprintln(diagnostics, "Usage: chainsctl {state|describe|watch|send|tui} [options]\nConfigure chainsctl.toml or set CHAINS_OPERATOR_TOKEN and optionally CHAINS_OPERATOR_URL.")
 	}
 	if len(args) == 0 {
 		usage()
@@ -89,11 +88,11 @@ func run(ctx context.Context, args []string, in io.Reader, out, diagnostics io.W
 	if command != "tui" && *format != "table" && *format != "json" && *format != "csv" {
 		return errors.New("output must be table, json or csv")
 	}
-	url, err := operatorURL(*configPath, *address)
+	url, token, err := operatorConnection(ctx, *configPath, *address)
 	if err != nil {
 		return err
 	}
-	client, err := operator.NewClient(url, os.Getenv("CHAINS_OPERATOR_TOKEN"))
+	client, err := operator.NewClient(url, token)
 	if err != nil {
 		return err
 	}
@@ -164,52 +163,6 @@ func run(ctx context.Context, args []string, in io.Reader, out, diagnostics io.W
 		return printRows(out, *format, []string{"ID", "TYPE", "SOURCE"}, [][]string{{receipt.ID, receipt.Type, receipt.Source}})
 	case "tui":
 		return runTUI(ctx, client, in, out)
-	}
-	return nil
-}
-
-func operatorURL(configPath, flagURL string) (string, error) {
-	if env := os.Getenv("CHAINS_OPERATOR_CONFIG"); env != "" {
-		configPath = env
-	}
-	settings := struct {
-		URL string `json:"url"`
-	}{URL: "http://127.0.0.1:8080"}
-	if configPath != "" {
-		if err := loadClientConfig(configPath, &settings); err != nil {
-			return "", err
-		}
-	} else {
-		home, err := os.UserConfigDir()
-		if err == nil {
-			err = loadClientConfig(filepath.Join(home, "chains", "chainsctl.json"), &settings)
-			if err != nil && !errors.Is(err, os.ErrNotExist) {
-				return "", err
-			}
-		}
-	}
-	if flagURL != "" {
-		settings.URL = flagURL
-	}
-	if env, ok := os.LookupEnv("CHAINS_OPERATOR_URL"); ok {
-		settings.URL = env
-	}
-	return settings.URL, nil
-}
-
-func loadClientConfig(path string, settings any) error {
-	file, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	decoder := json.NewDecoder(file)
-	decoder.DisallowUnknownFields()
-	if err = decoder.Decode(settings); err != nil {
-		return fmt.Errorf("%s: %w", path, err)
-	}
-	if decoder.Decode(new(any)) != io.EOF {
-		return fmt.Errorf("%s: expected one config object", path)
 	}
 	return nil
 }

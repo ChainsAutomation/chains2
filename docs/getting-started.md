@@ -2,6 +2,21 @@
 
 The native demo runs Mosquitto, the Chains authority, the simulated fan, and the humidity sensor as separate processes on your machine. It also serves the web console at `http://127.0.0.1:8080/ui/`.
 
+## Native installation
+
+From a checkout, run:
+
+```sh
+./scripts/install.sh                     # chainsctl
+./scripts/install.sh chains               # engine and demo adapters
+./scripts/install.sh chains-go-service    # bundled Go services
+./scripts/install.sh all --with-web       # all binaries, with both web apps embedded
+```
+
+The installer uses Go 1.23 or newer and puts binaries in `~/.local/bin`. Use `--bindir DIR` for another destination and ensure that directory is on your `PATH`. Run the same command from an updated checkout to upgrade. Use `--force` if you intend to replace an existing wrapper or unrelated binary.
+
+The CLI build needs only Go. For the engine, install a C compiler, pkg-config, and the SQLite and libmosquitto development headers. For the Go services, also install the libevdev development headers. Web builds require Node.js 22.12 or newer and npm. The [operator CLI guide](operator-cli.md) covers connection settings and gopass setup.
+
 ## Prerequisites
 
 Use Linux, Go 1.23 or newer, and Node.js 22.12 or newer. On Debian or Ubuntu, install the native build dependencies and demo tools.

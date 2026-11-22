@@ -1,33 +1,55 @@
 # Operator CLI and TUI
 
-`chainsctl` connects to the state authority's HTTP API. It can inspect the State tree, describe services, follow live activity, and publish manual events over either system bus. Build it with Go 1.23 or newer. For browser access and correlated activity timelines, see the [web console guide](operator-web.md).
+`chainsctl` connects to the state authority's HTTP API. It can inspect the State tree, describe services, follow live activity, and publish manual events over either system bus. Install it from the checkout with Go 1.23 or newer. For browser access and correlated activity timelines, see the [web console guide](operator-web.md).
 
 ```sh
-CGO_ENABLED=0 go build -o chainsctl ./cmd/chainsctl
-export CHAINS_TOKEN='<your bearer token>'
-./chains engine -rules examples/humidity.chains -listen 127.0.0.1:8080 -operator-api -operator-trace
+./scripts/install.sh
+chainsctl describe
 ```
 
-In the terminal running the client, set `CHAINS_OPERATOR_TOKEN` to the same value. For a remote authority, use an HTTPS endpoint and configure your proxy to stream Server-Sent Events without buffering.
+The installer defaults to `~/.local/bin`. Add it to your `PATH` if needed. See [Native installation](getting-started.md#native-installation) for other binaries and custom install directories.
+
+Create `$XDG_CONFIG_HOME/chains/chainsctl.toml` (usually `~/.config/chains/chainsctl.toml`). Use the authority's HTTPS URL when connecting remotely.
+
+```toml
+url = "https://chains.example.test"
+token_command = ["gopass", "show", "--password", "--nofuzzysearch", "chains/operator"]
+```
+
+Use `token = "…"` in place of `token_command` to store a literal bearer token. Give a file containing a literal token mode `0600`. The command runs once per invocation. Specify its executable and arguments as separate strings. It must succeed within 30 seconds and return a single nonempty token on stdout. For gopass, store the same token as the authority uses and substitute your entry name. [gopass show](https://github.com/gopasspw/gopass/blob/master/docs/commands/show.md)
+
+`CHAINS_OPERATOR_TOKEN` overrides the file credential. URL precedence is `CHAINS_OPERATOR_URL`, `--url`, the file, then `http://127.0.0.1:8080`. Use `--config` or `CHAINS_OPERATOR_CONFIG` to select a file for another deployment. If you override the URL to a different endpoint, supply `CHAINS_OPERATOR_TOKEN` for that endpoint.
+
+For an existing `chainsctl.json`, copy its URL into the TOML file and add your token source. If the installer finds a custom launcher at the destination, check the new config with an install in a separate directory before using `--force` to replace the launcher.
+
+## Configure the authority
+
+```sh
+export CHAINS_TOKEN='<your bearer token>'
+chains engine -rules examples/humidity.chains -listen 127.0.0.1:8080 -operator-api -operator-trace
+```
+
+For a remote authority, configure the HTTPS proxy to stream Server-Sent Events without buffering.
 
 | Engine JSON key | Flag | Environment | Default |
 | --- | --- | --- | --- |
 | `operator_api` | `-operator-api` | `CHAINS_OPERATOR_API` | `false` |
 | `operator_trace` | `-operator-trace` | `CHAINS_OPERATOR_TRACE` | `false` |
 | `listen` | `-listen` | `CHAINS_LISTEN` | Disabled |
-| `token` | `-token` | `CHAINS_TOKEN` | Required for HTTP |
+| `token` | `-token` | `CHAINS_TOKEN` | Required for HTTP unless a command supplies it |
+| `token_command` | | | Optional array of executable and arguments |
+
+In the engine JSON config, use `"token_command": ["gopass", "show", "--password", "--nofuzzysearch", "chains/operator"]` in place of `token`. An explicit environment value or flag overrides the configured source. The engine resolves the command once at startup when HTTP is enabled.
 
 Enable `operator_api` only on the state authority. Set `operator_trace=true` on each engine whose rule runs you want to see. The authority collects activity from a separate all-types subscription even when its rules subscribe to a subset. Workers send trace over the bus as `operator.trace`, which the engine ignores in rule dispatch. With MQTT ACLs, grant the observer subscription access across the Chains namespace and grant each tracing worker permission to publish under its own ID on the trace route.
-
-The client defaults to `http://127.0.0.1:8080`. Set `{"url":"https://chains.example.test"}` in `$XDG_CONFIG_HOME/chains/chainsctl.json` (usually `~/.config/chains/chainsctl.json`). Override the file with `--config` or `CHAINS_OPERATOR_CONFIG`. URL precedence is `CHAINS_OPERATOR_URL`, `--url`, the file, then the default. The client takes its bearer token from the environment.
 
 ## Inspect state
 
 ```sh
-./chainsctl state
-./chainsctl state humidity-sensor/bathroom-sensor
-./chainsctl state --output json humidity-sensor/bathroom-sensor/humidity
-./chainsctl state --output csv
+chainsctl state
+chainsctl state humidity-sensor/bathroom-sensor
+chainsctl state --output json humidity-sensor/bathroom-sensor/humidity
+chainsctl state --output csv
 ```
 
 Use stable IDs in a path of `service[/device[/attribute]]`. The response identifies the state epoch and revision and includes service, device, and attribute rows within the selected subtree. An unmatched path returns zero rows. State lists declared attributes even before a device reports them. The table and TUI show **Unreported**. JSON omits the reading fields for these attributes, and CSV leaves the value and timestamps empty. An explicit `null` reading has its own timestamps. Reported records also include the last state revision. The default table shows the last change time. JSON and CSV include both timestamps when available.
@@ -46,10 +68,10 @@ The default table lists every registered service and its capability counts. An e
 ## Watch activity
 
 ```sh
-./chainsctl watch --recent 25
-./chainsctl watch --type 'action.*,rule.*' --engine keyboard-worker
-./chainsctl watch --service humidity-sensor --device bathroom-sensor --output json
-./chainsctl watch --all --correlation <event-id> --output csv
+chainsctl watch --recent 25
+chainsctl watch --type 'action.*,rule.*' --engine keyboard-worker
+chainsctl watch --service humidity-sensor --device bathroom-sensor --output json
+chainsctl watch --all --correlation <event-id> --output csv
 ```
 
 Watch shows incoming events, state changes, registrations, service availability and restart transitions, action requests and outcomes, and rule lifecycle records when tracing is enabled. A restart marker appears when the authority observes a new process instance for a known service. Rule tracing covers starts, resumes after a subsequent event, finishes, failures, timeouts, cancellations, and triggers skipped at capacity. Local bridge action requests appear in the feed alongside broker-delivered requests. Engines collecting traces also report their own action publication failures and timeouts.
@@ -61,9 +83,9 @@ The feed keeps the latest 2,048 activity records in the authority's memory. `--r
 ## Send an event
 
 ```sh
-./chainsctl send --profile humidity --data '72.5'
-./chainsctl send --name scene_evening --data '{"room":"living-room"}'
-./chainsctl send --name scene_evening --file event.json --output json
+chainsctl send --profile humidity --data '72.5'
+chainsctl send --name scene_evening --data '{"room":"living-room"}'
+chainsctl send --name scene_evening --file event.json --output json
 ```
 
 A profile is an entry in the authority's existing `http` configuration. Chains uses its configured source, device, event type, and schema version. The source must be registered. For mappings with `attribute`, supply the attribute value itself. The authority wraps it in the event payload before validating it. See the [HTTP humidity mapping](../README.md#configure-and-extend).
@@ -72,7 +94,7 @@ A custom name submits `manual.<name>` with a JSON object from the reserved `chai
 
 ## Terminal UI
 
-Run `./chainsctl tui`. The tab line and status line each use one row. The remaining rows are available for state, activity, the event form, or details.
+Run `chainsctl tui`. The tab line and status line each use one row. The remaining rows are available for state, activity, the event form, or details.
 
 | View | Keys |
 | --- | --- |

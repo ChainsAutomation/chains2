@@ -26,6 +26,8 @@ type config struct {
 	Encoding                 string                       `json:"encoding"`
 	Listen                   string                       `json:"listen"`
 	Token                    string                       `json:"token"`
+	TokenCommand             []string                     `json:"token_command"`
+	HouseholdTokenCommand    []string                     `json:"household_token_command"`
 	HouseholdToken           string                       `json:"household_token"`
 	Timezone                 string                       `json:"timezone"`
 	Week                     string                       `json:"week"`
@@ -103,9 +105,19 @@ func readConfig(args []string) (config, error) {
 			return c, err
 		}
 	}
+	// A literal token from a flag or environment replaces the whole file source.
+	clearCommand := func(name string) {
+		switch name {
+		case "token":
+			c.TokenCommand = nil
+		case "household-token":
+			c.HouseholdTokenCommand = nil
+		}
+	}
 	f.Visit(func(flag *flag.Flag) {
 		if p := fields[flag.Name]; p != nil {
 			*p = *cli[flag.Name]
+			clearCommand(flag.Name)
 		}
 		switch flag.Name {
 		case "z2m-enabled":
@@ -132,6 +144,7 @@ func readConfig(args []string) (config, error) {
 		env := "CHAINS_" + strings.ToUpper(strings.ReplaceAll(name, "-", "_"))
 		if value, ok := os.LookupEnv(env); ok {
 			*ptr = value
+			clearCommand(name)
 		}
 	}
 	for name, ptr := range map[string]*bool{"CHAINS_Z2M_ENABLED": &c.Z2M.Enabled, "CHAINS_SCHEDULER": &c.Scheduler, "CHAINS_DEBUG": &c.Debug, "CHAINS_OPERATOR_WEB_LOOPBACK_PROXY": &c.OperatorWebLoopbackProxy, "CHAINS_OPERATOR_WEB": &c.OperatorWeb, "CHAINS_HOUSEHOLD_WEB": &c.HouseholdWeb, "CHAINS_OPERATOR_API": &c.OperatorAPI, "CHAINS_OPERATOR_TRACE": &c.OperatorTrace} {
@@ -162,11 +175,44 @@ func loadConfig(path string, c *config) error {
 	defer f.Close()
 	d := json.NewDecoder(f)
 	d.DisallowUnknownFields()
-	if err = d.Decode(c); err != nil {
+	// Decode credentials separately so a higher-priority file can replace a
+	// literal with a command (or vice versa) without inheriting the other field.
+	type settings config
+	file := struct {
+		*settings
+		Token                 *string  `json:"token"`
+		TokenCommand          []string `json:"token_command"`
+		HouseholdToken        *string  `json:"household_token"`
+		HouseholdTokenCommand []string `json:"household_token_command"`
+	}{settings: (*settings)(c)}
+	if err = d.Decode(&file); err != nil {
+		var fieldErr *json.UnmarshalTypeError
+		if errors.As(err, &fieldErr) {
+			switch fieldErr.Field {
+			case "token", "token_command", "household_token", "household_token_command":
+				return fmt.Errorf("%s: invalid credential setting %s", path, fieldErr.Field)
+			}
+		}
 		return fmt.Errorf("%s: %w", path, err)
 	}
 	if err = d.Decode(new(any)); err != io.EOF {
 		return fmt.Errorf("%s: expected one config object", path)
+	}
+	if file.Token != nil && file.TokenCommand != nil {
+		return fmt.Errorf("%s: configure either token or token_command", path)
+	}
+	if file.HouseholdToken != nil && file.HouseholdTokenCommand != nil {
+		return fmt.Errorf("%s: configure either household_token or household_token_command", path)
+	}
+	if file.Token != nil {
+		c.Token, c.TokenCommand = *file.Token, nil
+	} else if file.TokenCommand != nil {
+		c.Token, c.TokenCommand = "", file.TokenCommand
+	}
+	if file.HouseholdToken != nil {
+		c.HouseholdToken, c.HouseholdTokenCommand = *file.HouseholdToken, nil
+	} else if file.HouseholdTokenCommand != nil {
+		c.HouseholdToken, c.HouseholdTokenCommand = "", file.HouseholdTokenCommand
 	}
 	return nil
 }

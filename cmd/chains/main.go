@@ -20,6 +20,7 @@ import (
 	chains "chains-automation"
 	"chains-automation/bus"
 	"chains-automation/engine"
+	"chains-automation/internal/tokencommand"
 	"chains-automation/rules"
 	"chains-automation/sdk"
 	"chains-automation/state"
@@ -81,6 +82,20 @@ func openBus(ctx context.Context, address, namespace string, sub bus.Subscriptio
 }
 
 func runEngine(ctx context.Context, c config) error {
+	if c.Listen != "" && c.TokenCommand != nil {
+		token, err := tokencommand.Read(ctx, c.TokenCommand)
+		if err != nil {
+			return fmt.Errorf("token_command: %w", err)
+		}
+		c.Token = token
+	}
+	if c.Listen != "" && c.HouseholdWeb && c.HouseholdTokenCommand != nil {
+		token, err := tokencommand.Read(ctx, c.HouseholdTokenCommand)
+		if err != nil {
+			return fmt.Errorf("household_token_command: %w", err)
+		}
+		c.HouseholdToken = token
+	}
 	assets := webui.Assets()
 	if c.HouseholdToken != "" && (!c.HouseholdWeb || c.HouseholdToken == c.Token) {
 		return errors.New("household token requires the household app and must differ from the operator token")

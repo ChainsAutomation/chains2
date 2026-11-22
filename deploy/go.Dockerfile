@@ -17,6 +17,7 @@ COPY *.go ./
 COPY bus ./bus
 COPY cmd ./cmd
 COPY engine ./engine
+COPY internal ./internal
 COPY operator ./operator
 COPY rules ./rules
 COPY sdk ./sdk

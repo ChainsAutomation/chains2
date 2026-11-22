@@ -12,6 +12,8 @@ Live groups can combine a location pattern, device class, and required tags. Cho
 
 To give household users access, set `CHAINS_HOUSEHOLD_TOKEN` (or the `household_token` setting or `-household-token` flag) on the authority. Enable the app with `-household-web`, `household_web`, or `CHAINS_HOUSEHOLD_WEB=true`. Use a token distinct from your operator token.
 
+To load the household token from a helper, set `household_token_command` in the engine JSON config to an array of executable and arguments. The engine resolves it once at startup when the household app is enabled. `CHAINS_HOUSEHOLD_TOKEN` and `-household-token` override the configured source. See [token command syntax](operator-cli.md#configure-the-authority).
+
 Household users sign in with their token. They can open saved dashboards, see every registered device in **All Devices**, and use its declared controls. This includes reported data such as calendar and camera attributes. Both tokens can manage the same shared dashboard catalog. The operator token is required for rules, traces, and placement editing. The operator console at `/ui/` has its own sign-in. Both apps use the same HTTPS requirements for browser sessions. [Web console setup](operator-web.md)
 
 The authority stores layouts, navigation pins, and the home selection in its SQLite database. Back up that database to preserve dashboards. A memory-only database loses these edits on restart.

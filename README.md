@@ -4,6 +4,7 @@ Chains runs automation rules over a single MQTT 5 or Redis Streams bus. A Go eng
 
 ## Install and run
 
+- [Native installation](docs/getting-started.md#native-installation) installs the CLI and optionally the engine and bundled Go services.
 - [Local development](docs/getting-started.md) starts the native demo, builds the UI, and verifies the humidity rule.
 - [Docker and Compose](docs/docker-compose.md) covers both images and MQTT and Redis examples.
 - [Kubernetes](docs/kubernetes.md) covers Kustomize, persistent state, separate Pods, and node-attached integrations.
@@ -26,7 +27,7 @@ For Redis, add `-bus redis://localhost:6379` to the engine, fan, and sensor comm
 
 ## Operator console
 
-Build `./cmd/chainsctl` to inspect state, describe service capabilities, watch live events and rule runs, or send manual events. The terminal UI offers State, Watch, and Send in a keyboard-driven view. The [operator guide](docs/operator-cli.md) covers authority setup, table, JSON and CSV output, filters, and event profiles. The [web console guide](docs/operator-web.md) covers the bundled browser UI and its Trace Explorer. The [household dashboard guide](docs/household-dashboards.md) covers the standalone household app at `/`, dashboard builder, and device controls. The [Devices guide](docs/devices.md) covers generated controls, location patterns, and tags.
+Run `./scripts/install.sh` to install `chainsctl` and inspect state, describe service capabilities, watch live events and rule runs, or send manual events. The terminal UI offers State, Watch, and Send in a keyboard-driven view. The [operator guide](docs/operator-cli.md) covers authority setup, table, JSON and CSV output, filters, and event profiles. The [web console guide](docs/operator-web.md) covers the bundled browser UI and its Trace Explorer. The [household dashboard guide](docs/household-dashboards.md) covers the standalone household app at `/`, dashboard builder, and device controls. The [Devices guide](docs/devices.md) covers generated controls, location patterns, and tags.
 
 ## Rules
 
@@ -83,7 +84,7 @@ Configuration precedence is environment, explicit CLI flags, JSON config files, 
 
 Use one node whose `id` equals the deployment's `authority` ID. Other engines set a distinct `id` and the same `authority`, and can set `types` to a list of event types. Place each action-producing rule on a single engine. Workers restore their read view from the authority and resynchronize on gaps and reconnects. Rule runs and missed triggers are live-only, so an interruption can skip a trigger even if the state update itself was persisted. Keep the SQLite files on persistent storage and arrange manual recovery if the authority host fails.
 
-To enable HTTP ingress, set `listen`, a bearer token (for example `CHAINS_TOKEN`), and an `http` mapping in the engine's JSON config:
+To enable HTTP ingress, set `listen`, a bearer token (for example `CHAINS_TOKEN` or [`token_command`](docs/operator-cli.md#configure-the-authority)), and an `http` mapping in the engine's JSON config:
 
 ```json
 {

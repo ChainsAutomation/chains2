@@ -40,3 +40,27 @@ func TestZigbee2MQTTEnvironmentPrecedence(t *testing.T) {
 		t.Fatalf("unexpected config: %+v", c.Z2M)
 	}
 }
+
+func TestCredentialSources(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(path, []byte(`{"token_command":["operator-helper"],"household_token_command":["household-helper"]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	c := config{Token: "system-token"}
+	if err := loadConfig(path, &c); err != nil {
+		t.Fatal(err)
+	}
+	if c.Token != "" || len(c.TokenCommand) != 1 || len(c.HouseholdTokenCommand) != 1 {
+		t.Fatal("config commands did not replace the existing source")
+	}
+	t.Setenv("CHAINS_CONFIG", path)
+	t.Setenv("CHAINS_HOUSEHOLD_TOKEN", "env-token")
+	c, err := readConfig([]string{"-token", "flag-token", "-household-token", "another-flag-token"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Token != "flag-token" || c.TokenCommand != nil || c.HouseholdToken != "env-token" || c.HouseholdTokenCommand != nil {
+		t.Fatal("literal flag and environment options did not replace configured commands")
+	}
+}
