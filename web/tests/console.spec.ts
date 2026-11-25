@@ -107,12 +107,15 @@ test("guided and DSL rules publish live, download, and import with conflicts", a
   await page.getByLabel("Target device").fill("fan");
   await page.getByLabel("Action", { exact: true }).fill("set_power");
   await page.getByRole("combobox", { name: "value *", exact: true }).selectOption("true");
+  await page.getByRole("button", { name: "Add delay" }).click();
+  await page.getByLabel("Delay in seconds").fill("0.05");
   await page.getByRole("button", { name: "Validate and preview" }).click();
-  await expect(page.getByText("Validated source", { exact: true })).toBeVisible();
+  await expect(page.locator(".preview pre")).toContainText("Sleep(0.05)");
   await page.getByRole("button", { name: "Publish", exact: true }).click();
   await expect(page.getByRole("button", { name: "Guided fixture", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Guided fixture", exact: true }).click();
   await expect(page.getByRole("combobox", { name: "Trigger", exact: true })).toBeVisible();
+  await expect(page.getByLabel("Delay in seconds")).toHaveValue("0.05");
   await page.getByRole("button", { name: "Close editor" }).click();
 
   const response = await page.evaluate(async () => fetch("/operator/v1/events", {
@@ -325,4 +328,92 @@ test("receiver cards identify the service and show AV controls across locations"
   for (const name of ["Input", "Volume", "Muted"]) {
     await expect(main.getByText(name, { exact: true })).toBeVisible();
   }
+});
+
+test("templates bind registered devices and publish a timed motion rule", async ({ page }) => {
+  const service = "motion-template-fixture";
+  function send(type: string, id: string, data: unknown, schemaVersion?: string) {
+    const message = { version: 3, source: service, type, id, correlation_id: id, observed_at: new Date().toISOString(), data, schema_version: schemaVersion };
+    execFileSync("mosquitto_pub", ["-p", process.env.CHAINS_WEB_TEST_MQTT_PORT ?? "18883", "-q", "1",
+      "-t", "web-fixture/msg/" + type + "/" + service + "/_", "-m", JSON.stringify(message)]);
+  }
+  const bool = { type: "boolean" };
+  const lamp = (id: string) => ({ id, name: id, classes: ["light"], actions: ["power"],
+    attributes: { power: { schema: bool, setter: { action: "power", schema_version: "1", argument: "value" } } } });
+  send("service.registered", "motion-template-register", {
+    uuid: service, name: "Motion fixture", service_type: "fixture",
+    devices: [
+      { id: "pir", name: "Motion sensor", classes: ["motion"], attributes: { occupancy: { schema: bool } } },
+      ...["one", "two", "three"].map(lamp),
+    ],
+    actions: { power: { "1": { type: "object", required: ["value"], properties: { value: bool } } } },
+  });
+  await login(page);
+  await expect.poll(async () => {
+    const services = await page.request.get("/operator/v1/services").then(r => r.json());
+    return services.find((item: { uuid: string }) => item.uuid === service)?.devices?.length;
+  }).toBe(4);
+  await page.getByRole("link", { name: "Rules", exact: true }).click();
+  await page.getByRole("button", { name: "From template" }).click();
+
+  const upload = `id = "choose-attribute"
+title = "Choose attribute"
+source = '''
+Event(device=lamp, attribute=power)
+return
+'''
+[[inputs]]
+name = "lamp"
+label = "Lamp"
+kind = "device"
+device_class = "light"
+[[inputs]]
+name = "power"
+label = "Attribute"
+kind = "attribute"
+device = "lamp"
+schema_type = "boolean"
+writable = true
+`;
+  await page.getByLabel("Upload template").setInputFiles({ name: "attribute.toml", mimeType: "application/toml", buffer: Buffer.from(upload) });
+  await expect(page.getByText("Template uploaded")).toBeVisible();
+  await page.getByLabel("Template", { exact: true }).selectOption("choose-attribute");
+  await expect(page.getByRole("button", { name: "Create draft" })).toBeDisabled();
+  const ref = (id: string) => JSON.stringify([service, id]);
+  await page.getByLabel("Lamp", { exact: true }).selectOption(ref("one"));
+  await page.getByLabel("Attribute", { exact: true }).selectOption("power");
+  await expect(page.getByRole("button", { name: "Create draft" })).toBeEnabled();
+  await page.getByRole("button", { name: "Remove template" }).click();
+  await page.getByRole("button", { name: "Confirm removal" }).click();
+  await expect(page.getByText("Template removed")).toBeVisible();
+
+  await page.getByLabel("Template", { exact: true }).selectOption("see-1-2-3");
+  await page.getByLabel("Motion sensor", { exact: true }).selectOption(ref("pir"));
+  await page.getByLabel("First light").selectOption(ref("one"));
+  await expect(page.getByLabel("Second light").locator("option").filter({ hasText: "one · Motion fixture" })).toHaveCount(0);
+  await page.getByLabel("Second light").selectOption(ref("two"));
+  await page.getByLabel("Third light").selectOption(ref("three"));
+  await expect(page.getByLabel("First light")).toHaveValue(ref("one"));
+  await expect(page.getByLabel("Second light")).toHaveValue(ref("two"));
+  await page.getByRole("button", { name: "Create draft" }).click();
+  await expect(page.getByLabel("Rule source")).toHaveValue(/Sleep\(2\)/);
+  await page.getByRole("button", { name: "Publish", exact: true }).click();
+  await expect(page.getByRole("button", { name: "See 1–2–3", exact: true })).toBeVisible();
+  const occupancy = (id: string, value: boolean) => send("observation.submitted", id, {
+    event_type: "device.observed", observations: [{ device_id: "pir", values: { occupancy: value } }],
+  }, "1");
+  occupancy("motion-initial", false);
+  await expect.poll(async () => {
+    const state = await page.request.get("/operator/v1/state?service=" + service).then(r => r.json());
+    return state.rows.find((row: { attribute?: string }) => row.attribute === "occupancy")?.value;
+  }).toBe(false);
+  occupancy("motion-detected", true);
+  const records = async () => {
+    const trace = await page.request.get("/operator/v1/traces?correlation=motion-detected").then(r => r.json());
+    return (trace.records as { type: string; device_id: string; time: string }[]).filter(row => row.type === "action.requested");
+  };
+  await expect.poll(async () => (await records()).map(row => row.device_id), { timeout: 12000 }).toEqual(["one", "two", "three"]);
+  const times = (await records()).map(row => Date.parse(row.time));
+  expect(times[1] - times[0]).toBeGreaterThanOrEqual(1950);
+  expect(times[2] - times[1]).toBeGreaterThanOrEqual(1950);
 });

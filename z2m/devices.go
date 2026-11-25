@@ -107,6 +107,9 @@ func mapDevice(d inventoryDevice) (device, bool) {
 			}
 		}
 	}
+	if _, ok := result.Attributes["occupancy"]; ok {
+		result.Classes = append(result.Classes, "motion")
+	}
 	sort.Strings(result.Actions)
 	return result, len(result.fields) > 0
 }

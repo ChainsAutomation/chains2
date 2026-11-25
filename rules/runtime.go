@@ -22,6 +22,8 @@ type DeviceRef struct {
 	DeviceID  string `json:"device_id"`
 }
 
+type namedDeviceRef struct{ service, device string }
+
 func (d DeviceRef) address() string { return d.ServiceID + "/" + d.DeviceID }
 
 type Host interface {
@@ -140,6 +142,9 @@ func (r *Runtime) Prepare(rule Rule) (*Prepared, error) {
 		if err != nil {
 			return nil, invalid(first.At, "%v", err)
 		}
+		if err := validateEventDevice(params); err != nil {
+			return nil, invalid(first.At, "%v", err)
+		}
 		o.pattern = params
 	} else {
 		o.args = calendarArgs(args, params)
@@ -233,7 +238,7 @@ func (r *Runtime) Dispatch(m chains.Message) {
 				delete(r.waits[key], w)
 				continue
 			}
-			if matched := observationMatch(w.pattern, w.placement, fields, patches); matched != nil {
+			if matched := r.eventMatch(w.pattern, w.placement, fields, patches); matched != nil {
 				w.event <- matchedEvent{m, matched}
 				delete(r.waits[key], w)
 			}
@@ -242,11 +247,46 @@ func (r *Runtime) Dispatch(m chains.Message) {
 			delete(r.waits, key)
 		}
 		for _, o := range r.openings[key] {
-			if matched := observationMatch(o.pattern, o.placement, fields, patches); matched != nil {
+			if matched := r.eventMatch(o.pattern, o.placement, fields, patches); matched != nil {
 				r.start(o, m, matched)
 			}
 		}
 	}
+}
+
+func validateEventDevice(pattern map[string]any) error {
+	value, ok := pattern["device"]
+	if !ok {
+		return nil
+	}
+	if _, ok := value.(namedDeviceRef); ok {
+		return nil
+	}
+	_, err := deviceReference(value)
+	return err
+}
+
+func (r *Runtime) eventMatch(pattern map[string]any, placement chains.PlacementFilter, fields map[string]any, patches []map[string]any) map[string]any {
+	if name, ok := pattern["device"].(namedDeviceRef); ok {
+		if fields["service_name"] != name.service {
+			return nil
+		}
+		if len(patches) == 0 && fields["device_name"] != name.device {
+			return nil
+		}
+		if len(patches) > 0 && !slices.ContainsFunc(patches, func(patch map[string]any) bool {
+			return patch["device_name"] == name.device
+		}) {
+			return nil
+		}
+		target, err := r.host.ResolveDevice(name.service, name.device)
+		if err != nil {
+			return nil
+		}
+		pattern = maps.Clone(pattern)
+		pattern["device"] = target
+	}
+	return observationMatch(pattern, placement, fields, patches)
 }
 
 func observationMatch(pattern map[string]any, placement chains.PlacementFilter, fields map[string]any, patches []map[string]any) map[string]any {
@@ -573,11 +613,28 @@ func (e *execution) call(x *Expression) (any, error) {
 	}
 	switch x.Text {
 	case "Event":
+		if err := validateEventDevice(named); err != nil {
+			return nil, err
+		}
 		return e.await(named)
+	case "Sleep":
+		seconds, ok := number(args[0])
+		if !ok || math.IsNaN(seconds) || seconds < 0 || seconds >= float64(math.MaxInt64)/float64(time.Second) {
+			return nil, errors.New("Sleep expects nonnegative seconds within the supported duration")
+		}
+		ctx, cancel := e.until()
+		defer cancel()
+		timer := time.NewTimer(time.Duration(math.Round(seconds * float64(time.Second))))
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+		case <-timer.C:
+		}
+		return nil, ctx.Err()
 	case "Action", "Set":
 		var ref DeviceRef
 		if target, found := named["device"]; found {
-			ref, err = deviceReference(target)
+			ref, err = e.resolveReference(target)
 		} else {
 			ref, err = e.resolve(named)
 		}
@@ -634,7 +691,7 @@ func (e *execution) call(x *Expression) (any, error) {
 		}
 		return result, err
 	case "State":
-		ref, err := deviceReference(args[0])
+		ref, err := e.resolveReference(args[0])
 		if err != nil {
 			return nil, err
 		}
@@ -669,7 +726,7 @@ func (e *execution) call(x *Expression) (any, error) {
 			}
 			return deviceReference(DeviceRef{service, device})
 		}
-		return e.resolve(named)
+		return namedReference(named)
 	case "Every", "Time":
 		if e.runtime.calendar.Disabled {
 			return nil, errors.New("scheduler is disabled")
@@ -714,13 +771,28 @@ func deviceReference(value any) (DeviceRef, error) {
 	return DeviceRef{}, errors.New("expected a device reference")
 }
 
+func (e *execution) resolveReference(value any) (DeviceRef, error) {
+	if named, ok := value.(namedDeviceRef); ok {
+		return e.runtime.host.ResolveDevice(named.service, named.device)
+	}
+	return deviceReference(value)
+}
+
 func (e *execution) resolve(named map[string]any) (DeviceRef, error) {
+	ref, err := namedReference(named)
+	if err != nil {
+		return DeviceRef{}, err
+	}
+	return e.resolveReference(ref)
+}
+
+func namedReference(named map[string]any) (namedDeviceRef, error) {
 	service, sok := named["service_name"].(string)
 	device, dok := named["device_name"].(string)
 	if !sok || !dok || service == "" || device == "" {
-		return DeviceRef{}, errors.New("service_name and device_name must be nonempty strings")
+		return namedDeviceRef{}, errors.New("service_name and device_name must be nonempty strings")
 	}
-	return e.runtime.host.ResolveDevice(service, device)
+	return namedDeviceRef{service, device}, nil
 }
 
 func number(v any) (float64, bool) {
@@ -814,6 +886,12 @@ func (e *execution) expr(x *Expression) (any, error) {
 		var key any = x.Text
 		if x.Kind == "index" {
 			key, err = e.expr(x.Right)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if named, ok := value.(namedDeviceRef); ok {
+			value, err = e.resolveReference(named)
 			if err != nil {
 				return nil, err
 			}

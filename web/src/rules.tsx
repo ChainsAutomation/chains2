@@ -1,6 +1,7 @@
 import { createSignal, For, Show } from "solid-js";
 import { HTTPError, jsonBody, type Service } from "./api";
 import { Button, Empty, Heading } from "./components";
+import { RuleTemplates, type RuleTemplate } from "./rule-templates";
 import { blankBuilder, RuleForm, type Builder } from "./rule-form";
 
 type Diagnostic = { message: string; line?: number; column?: number };
@@ -17,6 +18,7 @@ const errorText = (error: unknown) => {
 const diagnosticText = (d: Diagnostic) => (d.line ? "Line " + d.line + ", column " + d.column + ": " : "") + d.message;
 
 export function RulesView(props: { services: Service[]; api: <T>(path: string, init?: RequestInit) => Promise<T> }) {
+  const [templates, setTemplates] = createSignal<RuleTemplate[]>();
   const [catalog, setCatalog] = createSignal<Catalog>();
   const [draft, setDraft] = createSignal<Editor>();
   const [mode, setMode] = createSignal<"form" | "dsl">("form");
@@ -27,7 +29,7 @@ export function RulesView(props: { services: Service[]; api: <T>(path: string, i
   const [busy, setBusy] = createSignal(false);
   const [confirmDelete, setConfirmDelete] = createSignal(false);
   const readOnly = () => draft()?.origin === "file" || !catalog()?.writable;
-  const active = () => !!draft() || !!review();
+  const active = () => !!draft() || !!review() || !!templates();
 
   async function run(work: () => Promise<void>) {
     if (busy()) return;
@@ -43,7 +45,25 @@ export function RulesView(props: { services: Service[]; api: <T>(path: string, i
   void run(async () => { await refresh(); });
   function select(editor: Editor) {
     setDraft(editor); setMode(editor.builder && editor.origin === "web" ? "form" : "dsl");
-    setReview(undefined); setPreview(undefined); setConfirmDelete(false);
+    setTemplates(undefined); setReview(undefined); setPreview(undefined); setConfirmDelete(false);
+  }
+  async function refreshTemplates() {
+    setTemplates(await props.api<RuleTemplate[]>("/rules/templates"));
+  }
+  function openTemplates() {
+    void run(async () => {
+      await refreshTemplates();
+      setDraft(undefined); setReview(undefined); setPreview(undefined);
+    });
+  }
+  function generateTemplate(id: string, body: RequestInit, name: string) {
+    void run(async () => {
+      const result = await props.api<{ source: string; revision: string; diagnostic: Diagnostic | null }>(
+        "/rules/templates/" + encodeURIComponent(id) + "/instantiate", body);
+      if (result.diagnostic) throw new Error(diagnosticText(result.diagnostic));
+      select({ name, origin: "web", enabled: true, source: result.source, revision: result.revision });
+      setPreview(result);
+    });
   }
   function create() {
     const current = catalog();
@@ -71,7 +91,7 @@ export function RulesView(props: { services: Service[]; api: <T>(path: string, i
   }
   async function publish(revision: string, changes: Changes[]) {
     const result = await props.api<{ revision: string; warning?: string }>("/rules/publish", jsonBody("POST", { revision, changes }));
-    setReview(undefined); setDraft(undefined); setPreview(undefined); setConfirmDelete(false);
+    setReview(undefined); setDraft(undefined); setTemplates(undefined); setPreview(undefined); setConfirmDelete(false);
     setStatus(result.warning ?? "Rules published");
     await refresh();
   }
@@ -87,7 +107,7 @@ export function RulesView(props: { services: Service[]; api: <T>(path: string, i
       const body = new FormData(); body.append("file", file);
       const imported = await props.api<{ revision: string; rules: Omit<ImportEntry, "choice">[] }>("/rules/import", { method: "POST", body });
       setReview({ revision: imported.revision, rows: imported.rules.map<ImportEntry>(row => ({ ...row, originalName: row.name, choice: row.conflict || row.diagnostic ? "skip" : "add" })) });
-      setDraft(undefined);
+      setDraft(undefined); setTemplates(undefined);
     });
   }
   function setRow(index: number, values: Partial<ImportEntry>) {
@@ -133,6 +153,7 @@ export function RulesView(props: { services: Service[]; api: <T>(path: string, i
       <a class="button" href="/operator/v1/rules/export" download="chains-rules.zip">Download All</a>
       <label class="button rule-upload">Import file<input type="file" aria-label="Import rules file" accept=".chains,.zip"
         disabled={busy() || !catalog()?.writable} onChange={e => { importFile(e.currentTarget.files?.[0]); e.currentTarget.value = ""; }} /></label>
+      <Button onClick={openTemplates} disabled={busy() || !catalog()}>From template</Button>
       <Button primary onClick={create} disabled={busy() || !catalog()?.writable}>New rule</Button>
     </Heading>
     <Show when={problem()}><p class="notice" role="alert">{problem()}</p></Show>
@@ -150,6 +171,17 @@ export function RulesView(props: { services: Service[]; api: <T>(path: string, i
           </tbody></table></div>
         </Show>
       </section>
+      <Show when={templates()}>{list => <RuleTemplates templates={list()} services={props.services}
+        writable={!!catalog()?.writable} busy={busy()} close={() => setTemplates(undefined)} generate={generateTemplate}
+        upload={file => { void run(async () => {
+          await props.api("/rules/templates", { method: "POST", body: file });
+          await refreshTemplates(); setStatus("Template uploaded");
+        }); }}
+        remove={id => { void run(async () => {
+          await props.api("/rules/templates/" + encodeURIComponent(id), { method: "DELETE" });
+          await refreshTemplates(); setStatus("Template removed");
+        }); }} />
+      }</Show>
       <Show when={draft()}>{d =>
         <section class="panel composer">
           <div class="panel-title"><h2>{d().id ? "Edit rule" : "New rule"}</h2>

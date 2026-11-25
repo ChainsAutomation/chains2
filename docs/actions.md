@@ -7,8 +7,9 @@ A device declares an array of `classes` and a dictionary of attributes. The auth
 | `toggle` | Readable and writable boolean `power` |
 | `light` | All `toggle` capabilities |
 | `dimmer` | All `light` capabilities and readable and writable integer `dimlevel` from 0 to 100 percent |
+| `motion` | Readable boolean `occupancy` |
 
-A dimmer matches `Event(device_class="light")` and appears in `Devices(device_class="toggle")`. A toggle device can expose an additional native toggle action. Devices with an empty class list still get schema-driven controls.
+A dimmer matches `Event(device_class="light")` and appears in `Devices(device_class="toggle")`. A toggle device can expose an additional native toggle action. Zigbee2MQTT declares `motion` for devices that report `occupancy`. Devices with an empty class list still get schema-driven controls.
 
 ## Attribute descriptions
 
@@ -38,6 +39,8 @@ result = Set(device=lamp, attribute="power", value=true)
 Set(device=lamp, attribute="dimlevel", value=40, wait="sent")
 Action("create_calendar_entry", device=calendar, collection="work", title="Meeting", start="2026-12-01", end="2026-12-02")
 ```
+
+Declare `lamp = Device(service_name="Lighting", device_name="Desk")` before or after the opening match. Chains looks up the name pair when the reference is used. Use the ID pair to keep targeting the same device through display-name changes.
 
 Use `Set()` for a declared writable attribute and `Action()` for a named operation. Calls wait for the outcome by default. The returned object contains `status` and `action_id`, with the handler's optional `value` and an error when available. `wait="sent"` returns the action ID and status `sent` after the request enters the transport or hosted queue. Later outcomes are available in activity.
 

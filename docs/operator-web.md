@@ -39,6 +39,8 @@ The authenticated `GET /operator/v1/services` endpoint provides registered descr
 
 ## Rules
 
+Use **From template** to select a bundled or uploaded template, choose the required devices and attributes, and open an editable DSL draft. The guided editor also offers **Add delay** for inserting a pause between steps. [Rule templates and TOML format](rule-templates.md)
+
 Open **Rules** and select **New rule**. The guided form supports an event trigger, elapsed interval, or calendar schedule followed by actions. It uses registered devices and action schemas to populate selectors and arguments. Use **Set attribute** for a typed setter and **Continue after** to select the action wait mode. Use the DSL editor for conditions, loops, expressions, or more waits. Select **Validate and preview** to see the exact source and any diagnostics, then **Publish**. Enable, disable, and edit web rules from the same editor. Publication cancels runs of the changed rule. Actions already submitted can still finish. Deployment-managed rules appear read-only on the authority.
 
 The authority stores each web rule as a `.chains` file in the generation named by `CURRENT`. Files are keyed by rule ID and the manifest records their names and enabled status. Set `web_rules_dir`, `-web-rules-dir`, or `CHAINS_WEB_RULES_DIR` to change the directory. The default appends `.rules` to the configured SQLite path, for example `$XDG_STATE_HOME/chains/state.sqlite.rules`. With `-database :memory:`, provide an explicit directory to publish. The authority loads published rules on restart and honors its event subscriptions and scheduler settings.

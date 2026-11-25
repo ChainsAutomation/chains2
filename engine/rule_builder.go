@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"time"
 
@@ -20,6 +21,8 @@ type ruleBuilder struct {
 }
 
 type ruleBuilderAction struct {
+	Kind      string         `json:"kind,omitempty"`
+	Seconds   *float64       `json:"seconds,omitempty"`
 	Service   string         `json:"service_id"`
 	Device    string         `json:"device_id"`
 	Name      string         `json:"name"`
@@ -31,6 +34,12 @@ type ruleBuilderAction struct {
 
 func (e *Engine) buildRule(name string, b ruleBuilder) (string, error) {
 	for i, action := range b.Actions {
+		if action.Kind == "delay" {
+			continue
+		}
+		if action.Kind != "" || action.Seconds != nil {
+			return "", fmt.Errorf("invalid step %d", i+1)
+		}
 		if action.Attribute != "" {
 			value, ok := action.Args["value"]
 			if !ok {
@@ -78,9 +87,18 @@ func formatBuilder(name string, b ruleBuilder) (string, error) {
 	}
 	r.Body = append(r.Body, rules.Statement{Kind: "expression", Value: opening})
 	if len(b.Actions) == 0 {
-		return "", errors.New("add at least one action")
+		return "", errors.New("add at least one step")
 	}
 	for _, action := range b.Actions {
+		if action.Kind == "delay" {
+			if action.Seconds == nil || math.IsNaN(*action.Seconds) || *action.Seconds < 0 || *action.Seconds >= float64(math.MaxInt64)/float64(time.Second) {
+				return "", errors.New("enter nonnegative delay seconds within the supported duration")
+			}
+			r.Body = append(r.Body, rules.Statement{Kind: "expression", Value: &rules.Expression{
+				Kind: "call", Text: "Sleep", Arguments: []rules.Argument{{Value: builderLiteral(*action.Seconds)}},
+			}})
+			continue
+		}
 		if action.Service == "" || action.Device == "" || (action.Name == "" && action.Attribute == "") {
 			return "", errors.New("select an action and its target")
 		}
@@ -206,6 +224,14 @@ func recognizeBuilder(item ruleSource) *ruleBuilder {
 		a := ruleBuilderAction{}
 		deviceIndex := 0
 		switch call.Text {
+		case "Sleep":
+			value, _ := literalValue(call.Arguments[0].Value)
+			n, ok := value.(float64)
+			if !ok {
+				return nil
+			}
+			b.Actions = append(b.Actions, ruleBuilderAction{Kind: "delay", Seconds: &n})
+			continue
 		case "Action":
 			if len(call.Arguments) < 2 {
 				return nil

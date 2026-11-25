@@ -226,7 +226,20 @@ func (p *parser) expect(s string) lexeme {
 }
 
 // Parse reads one rule. The caller supplies its name, typically the filename stem.
-func Parse(name, source string) (rule Rule, err error) {
+func Parse(name, source string) (Rule, error) {
+	return parse(name, source, nil)
+}
+
+// Bind formats source with additional assignments after rule settings and before the body.
+func Bind(name, source string, assignments []Statement) (string, error) {
+	rule, err := parse(name, source, assignments)
+	if err != nil {
+		return "", err
+	}
+	return Format(rule)
+}
+
+func parse(name, source string, assignments []Statement) (rule Rule, err error) {
 	defer func() {
 		if v := recover(); v != nil {
 			if known, ok := v.(syntaxError); ok {
@@ -266,7 +279,7 @@ func Parse(name, source string) (rule Rule, err error) {
 		}
 		p.expect("newline")
 	}
-	rule.Body = p.block("eof")
+	rule.Body = append(append([]Statement(nil), assignments...), p.block("eof")...)
 	err = Validate(rule)
 	return
 }

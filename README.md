@@ -36,29 +36,33 @@ A rule is one indentation-based `.chains` file. Pass a file or a directory conta
 See [events and State](docs/events.md) for the observation structure, batching, and delivery guarantees. See [rules engine concurrency and latency](docs/rules-engine-concurrency.md) for event routing, run limits, CPU contention, and multi-process deployment.
 
 ```text
+led = Device(service_name=LEDPanel, device_name=panel0)
+
 Event(device_class=light)
-Action('writestring', service_name=LEDPanel, device_name=panel0, value="Light is modified")
+Action("writestring", device=led, value="Light is modified")
 ```
 
 ```text
 rule.concurrency = 3
 rule.timeout = 60
 
+led = Device(service_name=LEDPanel, device_name=panel0)
 ev = Event(action=power_toggle)
 if State(ev.device).power == false:
-    Action('writestring', service_name=LEDPanel, device_name=panel0, value="Light is off!")
+    Action("writestring", device=led, value="Light is off!")
 else:
-    Action('writestring', service_name=LEDPanel, device_name=panel0, value="Light is on!")
+    Action("writestring", device=led, value="Light is on!")
 ```
 
 - `Event()` matches envelope fields, device selectors, State attributes and values, or event payload fields. Each rule trigger or pending wait gets one match per observation, even if several devices match. `ev.matches` contains the matching device patches and `ev.observations` contains the full batch. A patch has `device`, `device_id`, `values`, and `data`. If exactly one patch matches, `ev.device` and `ev.data` are shortcuts.
 - `Device(service_name=..., device_name=...)` and name-based actions require a unique device. `Devices(service_name=..., device_name=...)` returns every match in ID order, including an empty list if none match. The plural selector can combine any of `service_id`, `service_name`, `device_id`, and `device_name`. The singular selector also takes an ID pair. `State(device)` reads the latest State. Use the event's `values` for the exact observation that triggered the rule.
 - `Event(type="state.changed")` matches a changed leaf and exposes `attribute`, `previous`, `value`, `initial`, and `revision` under `ev.data`. Untyped `Event()` skips these derived notifications. An equal reading still triggers its ordinary event and refreshes `observed_at`, while `changed_at` keeps the last value-change time.
-- An opening `Event()`, `Every()`, or `Time()` starts a run after optional pure local assignments. Further waits suspend the current run. `rule.concurrency` defaults to one. `rule.timeout` defaults to 300 seconds and starts at the opening match. The same deadline applies through later waits, actions, and computation. A run ends on expiry, `return`, or the end of the file.
+- An opening `Event()`, `Every()`, or `Time()` starts a run after optional pure local assignments. A device alias declared there can also scope the trigger with `Event(device=alias)`. Further waits suspend the current run. `rule.concurrency` defaults to one. `rule.timeout` defaults to 300 seconds and starts at the opening match. The same deadline applies through later waits, actions, and computation. A run ends on expiry, `return`, or the end of the file.
 - Read the latest reported attribute with `State(ev.device).power`. A missing attribute evaluates to `null`. Use `ev.data.power` for the value carried by the event itself. Read attribute timestamps under `State(ev.device)._attributes.power`. Both state values and event fields can be used directly in action arguments.
 - Use `Action("set_power", device=ev.device, value=false)` for a known device, or supply a unique `service_name` and `device_name` pair. `Device(service_id="sim-fan", device_id=fan)` builds a reference from stable IDs. `Device()` also accepts the name pair. Unbound bare words such as `fan` are string shorthand in selectors and named target fields. Quote literal names containing spaces or punctuation. Other value expressions use explicit literals or declared variables.
 - Action arguments are validated against the registered schema. Use `schema_version="2"` to select a schema version. The default is `"1"`. Outcome mode returns `completed`, `submitted`, `failed`, or `timed_out`. Use `wait="sent"` to continue after sending the request. The engine traces `accepted` separately. Declared idempotent actions may retry while awaiting acceptance. A late device observation can still update state.
 - Use `#` for comments. The language supports single- and double-quoted strings, lists, objects, arithmetic, comparisons, `if`/`elseif`/`else`, `switch`/`case`/`default`, `while`, and `for item in items`. Use `Has(object, key)` to check whether a field exists.
+- `Sleep(2)` pauses the current run for two seconds, within its existing deadline. Fractional seconds are supported.
 - `Every("1s")` uses elapsed time. `Time(month=12, day=25, hour=0, minute=0)` matches local Christmas midnight. Calendar selectors support year, month, week, day, weekday (Sunday is 0), hour, minute, and second. Seconds default to zero, an hour by itself defaults to minute zero, and a date without clock fields uses midnight. Nonexistent local times are skipped and repeated local times fire once.
 
 A batch can update several devices with the same display name. This rule checks each matching device's exact reported volume.
@@ -70,7 +74,7 @@ for match in ev.matches:
         Action("set_volume", device=match.device, volume=30)
 ```
 
-See [device controls and actions](docs/actions.md) for typed attributes, setters, and action wait modes.
+Use [rule templates](docs/rule-templates.md) to create an editable draft from devices and attributes in your installation. See [device controls and actions](docs/actions.md) for typed attributes, setters, and action wait modes.
 
 The Go `rules` package exposes the structured rule model and `Parse`, `Validate`, and `Format` for tools that generate rules.
 

@@ -51,6 +51,10 @@ func (e *Engine) describeDevice(s chains.Service, d *chains.Device) error {
 			if err := expand("toggle"); err != nil {
 				return err
 			}
+		case "motion":
+			if !reflect.DeepEqual(schemaShape(d.Attributes["occupancy"].Schema), schemaShape(json.RawMessage(chains.PowerSchema))) {
+				return errors.New("requires boolean occupancy")
+			}
 		case "toggle":
 			if err := e.requireAttribute(s, *d, "power", chains.PowerSchema, 2); err != nil {
 				return err

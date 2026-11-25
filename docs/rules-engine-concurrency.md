@@ -45,6 +45,8 @@ A rule defaults to one concurrent run. With `rule.concurrency = 3`, suppose open
 
 Waiting runs hold their slots but park their goroutines on channels or timers. Go schedules ready goroutines across available OS threads and cores. Statements proceed in order within a run. Separate runs can issue actions or finish in a different order. The engine has a per-rule admission limit and no process-wide rule worker pool.
 
+`Sleep(seconds)` parks only the current run on a timer. It keeps its concurrency slot and original deadline and preserves the last matched event and its correlation. It responds to cancellation on rule replacement or engine shutdown. Sleeping does not reset the instruction budget.
+
 The default run deadline is five minutes from the opening match. Later matches refresh the 10,000-step interpreter budget while the original deadline stays in force. The budget catches tight loops. Deadline and cancellation checks occur at interpreter steps, so an expensive individual operation can take time to return. Actions have a default ten-second timeout within the time remaining in the run. [Execution limits](../rules/runtime.go#L220) · [Action timeout](../engine/engine.go#L88) · [Action wait](../engine/engine.go#L529)
 
 ## Where CPU time and latency accumulate

@@ -3,7 +3,7 @@ import { attributeLabel, type Json, type Schema, type Service } from "./api";
 import { Argument } from "./argument";
 import { Button, options, Picker } from "./components";
 
-export type RuleAction = { service_id: string; device_id: string; name: string; attribute?: string; wait?: string; version?: string; args: Record<string, Json> };
+export type RuleAction = { kind?: "delay"; seconds?: number; service_id: string; device_id: string; name: string; attribute?: string; wait?: string; version?: string; args: Record<string, Json> };
 export type Builder = { trigger: "Event" | "Every" | "Time"; interval?: string; selectors: Record<string, Json>; actions: RuleAction[]; concurrency?: number; timeout?: number };
 export const blankAction = (): RuleAction => ({ service_id: "", device_id: "", name: "", args: {} });
 export const blankBuilder = (): Builder => ({ trigger: "Event", selectors: {}, actions: [blankAction()] });
@@ -68,12 +68,24 @@ export function RuleForm(props: { value: Builder; services: Service[]; change: (
       <label class="field"><span>Timeout in seconds</span><input type="number" min="0" step="any" placeholder="300" value={props.value.timeout ?? ""}
         onInput={e => props.change({ ...props.value, timeout: e.currentTarget.valueAsNumber || undefined })} /></label>
     </div>
-    <For each={props.value.actions.map((_, i) => i)}>{index =>
-      <ActionFields index={index} action={props.value.actions[index]} services={props.services}
-        onChange={action => actionChange(index, action)}
-        onRemove={props.value.actions.length > 1 ? () => props.change({ ...props.value, actions: props.value.actions.filter((_, i) => i !== index) }) : undefined} />
-    }</For>
-    <div><Button onClick={() => props.change({ ...props.value, actions: [...props.value.actions, blankAction()] })}>Add action</Button></div>
+    <For each={props.value.actions.map((_, i) => i)}>{index => {
+      const step = () => props.value.actions[index];
+      const remove = () => props.change({ ...props.value, actions: props.value.actions.filter((_, i) => i !== index) });
+      return <Show when={step().kind === "delay"} fallback={
+        <ActionFields index={index} action={step()} services={props.services} onChange={action => actionChange(index, action)}
+          onRemove={props.value.actions.length > 1 ? remove : undefined} />
+      }>
+        <section class="rule-action">
+          <div class="rule-toolbar"><h3>Delay</h3><Show when={props.value.actions.length > 1}><Button onClick={remove}>Remove delay</Button></Show></div>
+          <label class="field"><span>Delay in seconds</span><input type="number" min="0" step="any" required value={step().seconds ?? ""}
+            onInput={e => actionChange(index, { ...step(), seconds: e.currentTarget.value === "" ? undefined : e.currentTarget.valueAsNumber })} /></label>
+        </section>
+      </Show>;
+    }}</For>
+    <div class="toolbar">
+      <Button onClick={() => props.change({ ...props.value, actions: [...props.value.actions, blankAction()] })}>Add action</Button>
+      <Button onClick={() => props.change({ ...props.value, actions: [...props.value.actions, { ...blankAction(), kind: "delay" }] })}>Add delay</Button>
+    </div>
   </fieldset>;
 }
 

@@ -480,3 +480,129 @@ for match in ev.matches:
 		t.Fatalf("unexpected match %+v", got)
 	}
 }
+
+type aliasHost struct {
+	captureHost
+	registry chan DeviceRef
+}
+
+func (h aliasHost) ResolveDevice(_, _ string) (DeviceRef, error) {
+	select {
+	case ref := <-h.registry:
+		h.registry <- ref
+		return ref, nil
+	default:
+		return DeviceRef{}, errors.New("ambiguous or unavailable device")
+	}
+}
+
+func TestNamedAliasBeforeRegistrationAndScopedMatch(t *testing.T) {
+	rule, err := Parse("alias", `
+led = Device(service_name=LEDPanel, device_name=panel0)
+Event(type="lamp", device=led)
+Action("seen", device=led)
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := aliasHost{captureHost: captureHost{calls: make(chan invocation, 4)}, registry: make(chan DeviceRef, 1)}
+	r, err := New(context.Background(), h, Calendar{}, slog.New(slog.NewTextHandler(io.Discard, nil)), []Rule{rule})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	emit := func(service string) {
+		m, _ := chains.New("lamp", service, nil)
+		m.ServiceID, m.ServiceName, m.DeviceID, m.DeviceName = service, "LEDPanel", "one", "panel0"
+		r.Dispatch(m)
+	}
+	emit("first") // It was not registered when the rule was prepared.
+	ref := DeviceRef{"first", "one"}
+	h.registry <- ref
+	emit("other") // A stale event with matching names has a different identity.
+	emit("first")
+	if got := receiveInvocation(t, h.captureHost); got.ref != ref || got.name != "seen" {
+		t.Fatalf("unexpected action: %+v", got)
+	}
+	<-h.registry // Lookup now reports ambiguity.
+	emit("first")
+	select {
+	case got := <-h.calls:
+		t.Fatalf("unexpected action: %+v", got)
+	case <-time.After(25 * time.Millisecond):
+	}
+}
+
+func TestSleepTimeoutReplacementAndIndependentProgress(t *testing.T) {
+	parse := func(name, source string) Rule {
+		t.Helper()
+		rule, err := Parse(name, source)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return rule
+	}
+	delay := parse("delay", `
+rule.timeout = 0.2
+led = Device(service_id=test, device_id=test)
+Event(type="delay")
+Action("before", device=led)
+Sleep(30)
+Action("after", device=led)
+`)
+	other := parse("other", `
+Event(type="other")
+Action("independent", device=Device(service_id=test, device_id=test))
+`)
+	host := captureHost{calls: make(chan invocation, 8)}
+	traces := make(chan Trace, 16)
+	r, err := New(context.Background(), host, Calendar{}, slog.New(slog.NewTextHandler(io.Discard, nil)), []Rule{delay, other}, func(trace Trace) { traces <- trace })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	awaitTrace := func(kind string) {
+		t.Helper()
+		timer := time.NewTimer(2 * time.Second)
+		defer timer.Stop()
+		for {
+			select {
+			case trace := <-traces:
+				if trace.Rule == "delay" && trace.Type == kind {
+					return
+				}
+			case <-timer.C:
+				t.Fatal("missing trace", kind)
+			}
+		}
+	}
+	dispatchEvent(r, "delay", "test", nil)
+	if got := receiveInvocation(t, host); got.name != "before" {
+		t.Fatal(got)
+	}
+	dispatchEvent(r, "other", "test", nil)
+	if got := receiveInvocation(t, host); got.name != "independent" {
+		t.Fatal(got)
+	}
+	awaitTrace("rule.timeout")
+	delay.Timeout = 30 * time.Second
+	prepared, err := r.Prepare(delay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Apply([]string{"delay"}, []*Prepared{prepared})
+	dispatchEvent(r, "delay", "test", nil)
+	if got := receiveInvocation(t, host); got.name != "before" {
+		t.Fatal(got)
+	}
+	r.Apply([]string{"delay"}, nil)
+	awaitTrace("rule.cancelled")
+	if len(host.calls) != 0 {
+		t.Fatal("action ran after the sleep was cancelled")
+	}
+	for _, source := range []string{"Sleep(2)\nEvent()", "Event()\nSleep()", "Event()\nSleep(seconds=2)"} {
+		if _, err := Parse("bad", source); err == nil {
+			t.Errorf("accepted %q", source)
+		}
+	}
+}

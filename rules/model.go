@@ -227,7 +227,7 @@ func validateExpr(x *Expression, names map[string]bool, shorthand, pure bool) er
 }
 
 func bareArgument(function, key string) bool {
-	return function == "Event" || ((function == "Action" || function == "Set" || function == "Device" || function == "Devices") && (key == "service_name" || key == "device_name" || key == "service_id" || key == "device_id"))
+	return (function == "Event" && key != "device") || ((function == "Action" || function == "Set" || function == "Device" || function == "Devices") && (key == "service_name" || key == "device_name" || key == "service_id" || key == "device_id"))
 }
 
 func validateCall(x *Expression, names map[string]bool, pure, opening bool) error {
@@ -250,11 +250,16 @@ func validateCall(x *Expression, names map[string]bool, pure, opening bool) erro
 		}
 	}
 	bad := func(want string) error { return invalid(x.At, "%s expects %s", x.Text, want) }
-	if pure && !opening && x.Text != "Has" && x.Text != "Exists" && !(x.Text == "Device" && keys["service_id"] && keys["device_id"]) {
+	if pure && !opening && x.Text != "Has" && x.Text != "Exists" && x.Text != "Device" {
 		return invalid(x.At, "%s cannot run before the opening match", x.Text)
 	}
 	switch x.Text {
-	case "Event", "Time":
+	case "Event":
+		if keys["device"] && (keys["service_id"] || keys["device_id"] || keys["service_name"] || keys["device_name"]) {
+			return bad("device= or separate service and device selectors")
+		}
+		fallthrough
+	case "Time":
 		if positional != 0 {
 			return bad("named arguments")
 		}
@@ -300,7 +305,7 @@ func validateCall(x *Expression, names map[string]bool, pure, opening bool) erro
 		if positional != 0 || len(keys) != 2 || !(keys["service_id"] && keys["device_id"] || keys["service_name"] && keys["device_name"]) {
 			return bad("a service/device ID pair or a service/device name pair")
 		}
-	case "Exists", "Every", "State":
+	case "Exists", "Every", "State", "Sleep":
 		if positional != 1 || len(keys) > 0 {
 			return bad("one positional argument")
 		}

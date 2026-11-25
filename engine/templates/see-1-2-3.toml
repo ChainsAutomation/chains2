@@ -1,0 +1,38 @@
+id = "see-1-2-3"
+title = "See 1–2–3"
+description = "On motion, turn on three lights in order, two seconds apart."
+source = '''
+Event(type="state.changed", device=motion, attribute="occupancy", value=true, initial=false)
+Set(device=first_light, attribute="power", value=true, wait="sent")
+Sleep(2)
+Set(device=second_light, attribute="power", value=true, wait="sent")
+Sleep(2)
+Set(device=third_light, attribute="power", value=true, wait="sent")
+'''
+
+[[inputs]]
+name = "motion"
+label = "Motion sensor"
+kind = "device"
+device_class = "motion"
+
+[[inputs]]
+name = "first_light"
+label = "First light"
+kind = "device"
+device_class = "light"
+distinct_group = "lights"
+
+[[inputs]]
+name = "second_light"
+label = "Second light"
+kind = "device"
+device_class = "light"
+distinct_group = "lights"
+
+[[inputs]]
+name = "third_light"
+label = "Third light"
+kind = "device"
+device_class = "light"
+distinct_group = "lights"

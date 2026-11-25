@@ -66,6 +66,7 @@ func (e *Engine) ruleRoutes(mux *http.ServeMux, auth func(http.HandlerFunc) http
 		return
 	}
 	base := operator.Base + "/rules"
+	e.templateRoutes(mux, base, auth)
 	mux.HandleFunc("GET "+base, auth(func(w http.ResponseWriter, r *http.Request) {
 		c.mu.Lock()
 		defer c.mu.Unlock()

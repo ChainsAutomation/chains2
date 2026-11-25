@@ -69,3 +69,16 @@ func TestInvalidURLDoesNotExposeCredentials(t *testing.T) {
 		t.Fatalf("bad validation error: %v", err)
 	}
 }
+
+func TestDiscoveryDeclaresMotionClass(t *testing.T) {
+	inventory := `[{"ieee_address":"0x0011223344556677","friendly_name":"hall motion","supported":true,"definition":{"exposes":[{"property":"occupancy","access":1}]}}]`
+	b := New(DefaultConfig(), nil)
+	devices, err := b.discover(context.Background(), []byte(inventory), func(context.Context, chains.Message, bool) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := devices["hall motion"]
+	if len(d.Classes) != 1 || d.Classes[0] != "motion" || string(d.Attributes["occupancy"].Schema) != chains.PowerSchema {
+		t.Fatalf("unexpected motion capabilities: %+v", d)
+	}
+}
