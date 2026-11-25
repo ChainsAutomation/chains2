@@ -15,6 +15,7 @@ type Rule struct {
 	Name        string
 	Concurrency int
 	Timeout     time.Duration
+	Mode        string // "", "drop", or "restart"
 	Body        []Statement
 }
 
@@ -257,23 +258,32 @@ func parse(name, source string, assignments []Statement) (rule Rule, err error) 
 		p.expect(".")
 		setting := p.expect("name")
 		p.expect("=")
-		value := p.expect("number")
-		n, e := strconv.ParseFloat(value.text, 64)
-		if e != nil || n <= 0 || settings[setting.text] {
+		if settings[setting.text] {
 			fail(setting.at, "invalid or duplicate rule setting %q", setting.text)
 		}
 		settings[setting.text] = true
 		switch setting.text {
+		case "mode":
+			value := p.expect("string")
+			if value.text != "drop" && value.text != "restart" {
+				fail(value.at, "rule.mode must be \"drop\" or \"restart\"")
+			}
+			rule.Mode = value.text
 		case "concurrency":
-			if n > 1024 || math.Trunc(n) != n {
+			value := p.expect("number")
+			n, e := strconv.ParseFloat(value.text, 64)
+			if e != nil || n <= 0 || n > 1024 || math.Trunc(n) != n {
 				fail(value.at, "concurrency must be an integer from 1 to 1024")
 			}
 			rule.Concurrency = int(n)
 		case "timeout":
-			if n >= float64(math.MaxInt64)/float64(time.Second) || n*float64(time.Second) < 1 {
+			value := p.expect("number")
+			n, e := strconv.ParseFloat(value.text, 64)
+			d, ok := secondsDuration(n)
+			if e != nil || n <= 0 || !ok || d < 1 {
 				fail(value.at, "timeout is outside the supported range")
 			}
-			rule.Timeout = time.Duration(math.Round(n * float64(time.Second)))
+			rule.Timeout = d
 		default:
 			fail(setting.at, "unknown rule setting %q", setting.text)
 		}
@@ -379,7 +389,17 @@ func (p *parser) branch(t lexeme) Statement {
 	return s
 }
 
-var precedence = map[string]int{"or": 1, "and": 2, "==": 3, "!=": 3, "<": 4, "<=": 4, ">": 4, ">=": 4, "+": 5, "-": 5, "*": 6, "/": 6, "%": 6}
+var precedence = map[string]int{"or": 1, "and": 2, "==": 3, "!=": 3, "<": 4, "<=": 4, ">": 4, ">=": 4, "in": 4, "not in": 4, "+": 5, "-": 5, "*": 6, "/": 6, "%": 6}
+
+// maxDurationSeconds bounds float64-to-time.Duration conversions safely below 2^63 ns.
+const maxDurationSeconds = 9e9
+
+func secondsDuration(seconds float64) (time.Duration, bool) {
+	if math.IsNaN(seconds) || math.IsInf(seconds, 0) || seconds < 0 || seconds > maxDurationSeconds {
+		return 0, false
+	}
+	return time.Duration(math.Round(seconds * float64(time.Second))), true
+}
 
 func (p *parser) expression(minimum int) *Expression {
 	defer p.enter()()
@@ -440,14 +460,22 @@ func (p *parser) expression(minimum int) *Expression {
 			continue
 		}
 		op := next.kind
+		twoTokens := false
 		if op == "name" {
 			op = next.text
+			if op == "not" && p.index+1 < len(p.tokens) && p.tokens[p.index+1].kind == "name" && p.tokens[p.index+1].text == "in" {
+				op = "not in"
+				twoTokens = true
+			}
 		}
 		rank := precedence[op]
 		if rank < minimum {
 			return x
 		}
 		p.take()
+		if twoTokens {
+			p.take()
+		}
 		x = &Expression{At: x.At, Kind: "binary", Text: op, Left: x, Right: p.expression(rank + 1)}
 	}
 }

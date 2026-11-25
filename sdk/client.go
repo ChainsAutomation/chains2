@@ -36,6 +36,20 @@ func (c Client) Send(ctx context.Context, m chains.Message) error {
 	return c.Bus.Publish(ctx, bus.Route(m), payload)
 }
 
+// SendEncoded publishes a message whose wire payload has already been encoded.
+func (c Client) SendEncoded(ctx context.Context, m chains.Message, payload []byte) error {
+	if m.Source != c.Source {
+		return errors.New("message source does not match client")
+	}
+	if err := m.Validate(time.Now()); err != nil {
+		return err
+	}
+	if len(payload) == 0 {
+		return c.Send(ctx, m)
+	}
+	return c.Bus.Publish(ctx, bus.Route(m), payload)
+}
+
 func (c Client) Register(ctx context.Context, s chains.Service) error {
 	m, err := chains.New(chains.Registration, c.Source, s)
 	if err != nil {
@@ -103,7 +117,8 @@ func (c Client) Serve(ctx context.Context, service chains.Service, handler Handl
 		return err
 	}
 	results := map[string]chains.Result{}
-	order := make([]string, 0, 4096)
+	var order [4096]string
+	orderPos := 0
 	for {
 		select {
 		case <-ctx.Done():
@@ -166,12 +181,12 @@ func (c Client) Serve(ctx context.Context, service chains.Service, handler Handl
 				result.Status = chains.Failed
 				result.Error = actionErr.Error()
 			}
-			results[key] = result
-			order = append(order, key)
-			if len(order) > 4096 {
-				delete(results, order[0])
-				order = order[1:]
+			if evicted := order[orderPos]; evicted != "" {
+				delete(results, evicted)
 			}
+			results[key] = result
+			order[orderPos] = key
+			orderPos = (orderPos + 1) % len(order)
 			if err = c.Outcome(ctx, m, result.Status, actionErr); err != nil {
 				return err
 			}

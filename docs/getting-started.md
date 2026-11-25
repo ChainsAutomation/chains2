@@ -57,6 +57,16 @@ export CHAINS_OPERATOR_URL=http://127.0.0.1:8080
 
 Rules published through the web console are stored under `.dev/state.sqlite.rules` and survive a demo restart. Edit `examples/humidity.chains` to change the demo rule and restart the launcher to reload it. The demo's HTTP profile is in `examples/humidity.json`. See [configuration and precedence](../README.md#configure-and-extend) for running a custom authority directly.
 
+## Generic MQTT sensor adapter
+
+The `chains sensor` subcommand maps a concrete raw MQTT topic into a Chains device observation:
+
+- By default it subscribes to `sensors/bathroom/humidity`, accepts raw numbers, and writes `humidity` to State in the same observation that triggers the rule.
+- A retained MQTT reading seeds reported State silently without emitting a live reading event.
+- To map another device, set `sensor_topic` (or `-sensor-topic`) and the config file's `sensor` object. The object can override `device`, `event`, `attribute`, `field`, `format`, and `schema`.
+- Supported input formats are `number`, `boolean` (including `ON`/`OFF`), `string`, and `json`. Supply a matching JSON Schema when changing the event payload.
+- When running the system bus on Redis Streams (`-bus redis://localhost:6379`), pass `-sensor-broker mqtt://localhost:1883` so the adapter reads raw readings from MQTT and publishes observations to Redis.
+
 ## Frontend and SDK development
 
 With the demo running, start Vite in another terminal.

@@ -10,8 +10,10 @@ import (
 	"math"
 	"reflect"
 	"slices"
+	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	chains "chains-automation"
 )
@@ -63,6 +65,7 @@ type opening struct {
 	rule      Rule
 	pattern   map[string]any
 	running   int
+	runs      map[*execution]context.CancelFunc
 	initial   map[string]any
 	binding   string
 	body      []Statement
@@ -142,6 +145,9 @@ func (r *Runtime) Prepare(rule Rule) (*Prepared, error) {
 		if err != nil {
 			return nil, invalid(first.At, "%v", err)
 		}
+		if err := validateEventPattern(params); err != nil {
+			return nil, invalid(first.At, "%v", err)
+		}
 		if err := validateEventDevice(params); err != nil {
 			return nil, invalid(first.At, "%v", err)
 		}
@@ -180,6 +186,7 @@ func (r *Runtime) Apply(remove []string, add []*Prepared) {
 	for _, item := range add {
 		o := item.entry
 		o.ctx, o.cancel = context.WithCancel(r.ctx)
+		o.runs = map[*execution]context.CancelFunc{}
 		r.active[o.rule.Name] = o
 		if o.trigger == "Event" {
 			key, _ := o.pattern["type"].(string)
@@ -204,41 +211,111 @@ type matchedEvent struct {
 	fields  map[string]any
 }
 
+type resolvedNamedDevice struct {
+	ref DeviceRef
+	ok  bool
+}
+
+func stringSliceAny(values []string) []any {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]any, len(values))
+	for i, v := range values {
+		out[i] = v
+	}
+	return out
+}
+
 func (r *Runtime) Dispatch(m chains.Message) {
+	keys := []string{m.Type}
+	if m.Type != chains.Changed {
+		keys = append(keys, "")
+	}
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return
+	}
+	hasCandidates := false
+	var namedToResolve []namedDeviceRef
+	for _, key := range keys {
+		waits := r.waits[key]
+		openings := r.openings[key]
+		if len(waits) == 0 && len(openings) == 0 {
+			continue
+		}
+		hasCandidates = true
+		for w := range waits {
+			if name, ok := w.pattern["device"].(namedDeviceRef); ok && (m.ServiceName == "" || name.service == m.ServiceName) {
+				if !slices.Contains(namedToResolve, name) {
+					namedToResolve = append(namedToResolve, name)
+				}
+			}
+		}
+		for _, o := range openings {
+			if name, ok := o.pattern["device"].(namedDeviceRef); ok && (m.ServiceName == "" || name.service == m.ServiceName) {
+				if !slices.Contains(namedToResolve, name) {
+					namedToResolve = append(namedToResolve, name)
+				}
+			}
+		}
+	}
+	r.mu.Unlock()
+	if !hasCandidates {
+		return
+	}
+
 	envelope := m
 	envelope.Observations = nil
 	fields := eventFields(envelope)
 	patches := make([]map[string]any, 0, len(m.Observations))
+	allPatches := make([]any, 0, len(m.Observations))
 	for _, observation := range m.Observations {
 		var data any
-		_ = json.Unmarshal(observation.Data, &data)
+		if len(observation.Data) > 0 {
+			_ = json.Unmarshal(observation.Data, &data)
+		}
 		values := make(map[string]any, len(observation.Values))
 		for key, raw := range observation.Values {
 			var value any
 			_ = json.Unmarshal(raw, &value)
 			values[key] = value
 		}
-		patches = append(patches, map[string]any{
-			"device":    DeviceRef{m.ServiceID, observation.DeviceID},
-			"device_id": observation.DeviceID, "device_name": observation.DeviceName,
-			"device_classes": observation.DeviceClasses, "location": observation.Location, "tags": observation.Tags, "values": values, "data": data,
-		})
+		patch := map[string]any{
+			"device":         DeviceRef{m.ServiceID, observation.DeviceID},
+			"device_id":      observation.DeviceID,
+			"device_name":    observation.DeviceName,
+			"device_classes": stringSliceAny(observation.DeviceClasses),
+			"location":       stringSliceAny(observation.Location),
+			"tags":           stringSliceAny(observation.Tags),
+			"values":         values,
+			"data":           data,
+		}
+		patches = append(patches, patch)
+		allPatches = append(allPatches, patch)
 	}
+	var resolved map[namedDeviceRef]resolvedNamedDevice
+	if len(namedToResolve) > 0 {
+		resolved = make(map[namedDeviceRef]resolvedNamedDevice, len(namedToResolve))
+		for _, name := range namedToResolve {
+			target, err := r.host.ResolveDevice(name.service, name.device)
+			resolved[name] = resolvedNamedDevice{ref: target, ok: err == nil}
+		}
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {
 		return
 	}
-	for _, key := range []string{m.Type, ""} {
-		if key == "" && m.Type == chains.Changed {
-			continue
-		}
+	for _, key := range keys {
 		for w := range r.waits[key] {
 			if w.ctx.Err() != nil {
 				delete(r.waits[key], w)
 				continue
 			}
-			if matched := r.eventMatch(w.pattern, w.placement, fields, patches); matched != nil {
+			if matched := r.eventMatch(w.pattern, w.placement, fields, patches, allPatches, resolved); matched != nil {
 				w.event <- matchedEvent{m, matched}
 				delete(r.waits[key], w)
 			}
@@ -247,11 +324,22 @@ func (r *Runtime) Dispatch(m chains.Message) {
 			delete(r.waits, key)
 		}
 		for _, o := range r.openings[key] {
-			if matched := r.eventMatch(o.pattern, o.placement, fields, patches); matched != nil {
+			if matched := r.eventMatch(o.pattern, o.placement, fields, patches, allPatches, resolved); matched != nil {
 				r.start(o, m, matched)
 			}
 		}
 	}
+}
+
+func validateEventPattern(pattern map[string]any) error {
+	for _, key := range []string{"type", "device_class", "service_id", "service_name", "device_id", "device_name", "source", "target", "schema_version"} {
+		if value, ok := pattern[key]; ok {
+			if _, isString := value.(string); !isString {
+				return fmt.Errorf("event selector %q must be a string", key)
+			}
+		}
+	}
+	return nil
 }
 
 func validateEventDevice(pattern map[string]any) error {
@@ -266,7 +354,8 @@ func validateEventDevice(pattern map[string]any) error {
 	return err
 }
 
-func (r *Runtime) eventMatch(pattern map[string]any, placement chains.PlacementFilter, fields map[string]any, patches []map[string]any) map[string]any {
+func (r *Runtime) eventMatch(pattern map[string]any, placement chains.PlacementFilter, fields map[string]any, patches []map[string]any, allPatches []any, resolved map[namedDeviceRef]resolvedNamedDevice) map[string]any {
+	var overrideDevice *DeviceRef
 	if name, ok := pattern["device"].(namedDeviceRef); ok {
 		if fields["service_name"] != name.service {
 			return nil
@@ -279,33 +368,34 @@ func (r *Runtime) eventMatch(pattern map[string]any, placement chains.PlacementF
 		}) {
 			return nil
 		}
-		target, err := r.host.ResolveDevice(name.service, name.device)
-		if err != nil {
-			return nil
+		if hit, checked := resolved[name]; checked {
+			if !hit.ok {
+				return nil
+			}
+			overrideDevice = &hit.ref
+		} else {
+			target, err := r.host.ResolveDevice(name.service, name.device)
+			if err != nil {
+				return nil
+			}
+			overrideDevice = &target
 		}
-		pattern = maps.Clone(pattern)
-		pattern["device"] = target
 	}
-	return observationMatch(pattern, placement, fields, patches)
+	return observationMatch(pattern, overrideDevice, placement, fields, patches, allPatches)
 }
 
-func observationMatch(pattern map[string]any, placement chains.PlacementFilter, fields map[string]any, patches []map[string]any) map[string]any {
+func observationMatch(pattern map[string]any, overrideDevice *DeviceRef, placement chains.PlacementFilter, fields map[string]any, patches []map[string]any, allPatches []any) map[string]any {
 	if len(patches) == 0 {
-		if matchesPlacement(placement, fields) && matches(pattern, fields) {
+		if matchesPlacement(placement, fields) && matches(pattern, overrideDevice, false, fields, nil) {
 			return fields
 		}
 		return nil
 	}
-	base := maps.Clone(pattern)
-	attribute, hasAttribute := base["attribute"]
-	value, hasValue := base["value"]
-	delete(base, "attribute")
-	delete(base, "value")
+	attribute, hasAttribute := pattern["attribute"]
+	value, hasValue := pattern["value"]
 	var selected []any
 	for _, patch := range patches {
-		candidate := maps.Clone(fields)
-		maps.Copy(candidate, patch)
-		if !matchesPlacement(placement, patch) || !matches(base, candidate) {
+		if !matchesPlacement(placement, patch) || !matches(pattern, overrideDevice, true, fields, patch) {
 			continue
 		}
 		if hasAttribute || hasValue {
@@ -327,11 +417,7 @@ func observationMatch(pattern map[string]any, placement chains.PlacementFilter, 
 		return nil
 	}
 	result := maps.Clone(fields)
-	all := make([]any, len(patches))
-	for i, patch := range patches {
-		all[i] = patch
-	}
-	result["observations"], result["matches"] = all, selected
+	result["observations"], result["matches"] = allPatches, selected
 	if len(selected) == 1 {
 		maps.Copy(result, selected[0].(map[string]any))
 	}
@@ -355,15 +441,41 @@ func matchesPlacement(filter chains.PlacementFilter, fields map[string]any) bool
 	return filter.Match(chains.Placement{Location: location, Tags: tags})
 }
 
-func matches(pattern, fields map[string]any) bool {
+func matches(pattern map[string]any, overrideDevice *DeviceRef, skipAttrValue bool, fields, patch map[string]any) bool {
+	lookup := func(k string) (any, bool) {
+		if patch != nil {
+			if v, ok := patch[k]; ok {
+				return v, true
+			}
+		}
+		if v, ok := fields[k]; ok {
+			return v, true
+		}
+		var data any
+		if patch != nil {
+			data = patch["data"]
+		} else {
+			data = fields["data"]
+		}
+		body, _ := data.(map[string]any)
+		v, ok := body[k]
+		return v, ok
+	}
 	for k, v := range pattern {
+		if skipAttrValue && (k == "attribute" || k == "value") {
+			continue
+		}
+		if k == "device" && overrideDevice != nil {
+			v = *overrideDevice
+		}
 		if k == "device_class" {
 			class, ok := v.(string)
 			if !ok {
 				return false
 			}
 			found := false
-			switch classes := fields["device_classes"].(type) {
+			rawClasses, _ := lookup("device_classes")
+			switch classes := rawClasses.(type) {
 			case []string:
 				found = slices.Contains(classes, class)
 			case []any:
@@ -374,11 +486,7 @@ func matches(pattern, fields map[string]any) bool {
 			}
 			continue
 		}
-		candidate, ok := fields[k]
-		if !ok {
-			body, _ := fields["data"].(map[string]any)
-			candidate, ok = body[k]
-		}
+		candidate, ok := lookup(k)
 		if !ok || !equal(candidate, v) {
 			return false
 		}
@@ -387,13 +495,24 @@ func matches(pattern, fields map[string]any) bool {
 }
 
 func (r *Runtime) start(o *opening, m chains.Message, fields map[string]any) {
-	if o.running >= o.rule.Concurrency {
+	if o.rule.Mode == "restart" {
+		for prev, cancel := range o.runs {
+			cancel()
+			delete(o.runs, prev)
+		}
+		o.running = 0
+	} else if o.running >= o.rule.Concurrency {
 		r.emitTrace("rule.skipped", o.rule.Name, "", m, "at capacity")
 		r.log.Debug("rule at capacity", "rule", o.rule.Name, "event", m.ID)
 		return
 	}
-	o.running++
-	e := &execution{runtime: r, rule: o.rule, env: maps.Clone(o.initial), ctx: o.ctx}
+	runCtx, runCancel := context.WithCancel(o.ctx)
+	e := &execution{runtime: r, rule: o.rule, env: maps.Clone(o.initial), ctx: runCtx}
+	if o.runs == nil {
+		o.runs = map[*execution]context.CancelFunc{}
+	}
+	o.runs[e] = runCancel
+	o.running = len(o.runs)
 	if r.trace != nil {
 		e.runID = chains.ID()
 	}
@@ -404,7 +523,13 @@ func (r *Runtime) start(o *opening, m chains.Message, fields map[string]any) {
 	r.wg.Add(1)
 	go func() {
 		defer r.wg.Done()
-		defer func() { r.mu.Lock(); o.running--; r.mu.Unlock() }()
+		defer func() {
+			r.mu.Lock()
+			delete(o.runs, e)
+			o.running = len(o.runs)
+			r.mu.Unlock()
+			runCancel()
+		}()
 		var started time.Time
 		if r.trace != nil {
 			started = time.Now()
@@ -450,8 +575,9 @@ func (r *Runtime) emitTrace(kind, rule, run string, m chains.Message, summary st
 
 func (r *Runtime) schedule(o *opening) {
 	defer r.wg.Done()
+	after := time.Now()
 	for {
-		next, err := r.calendar.next(o.trigger, o.args, time.Now())
+		next, err := r.calendar.next(o.trigger, o.args, after)
 		if err != nil {
 			r.log.Error("schedule stopped", "rule", o.rule.Name, "error", err)
 			return
@@ -468,6 +594,10 @@ func (r *Runtime) schedule(o *opening) {
 				r.start(o, m, eventFields(m))
 			}
 			r.mu.Unlock()
+			after = time.Now()
+			if after.Before(next) {
+				after = next
+			}
 		}
 	}
 }
@@ -484,15 +614,17 @@ func (e *execution) match(m chains.Message) {
 }
 
 func (e *execution) tick() error {
-	if err := e.ctx.Err(); err != nil {
-		return err
-	}
-	if !e.deadline.IsZero() && !time.Now().Before(e.deadline) {
-		return context.DeadlineExceeded
-	}
 	e.budget--
 	if e.budget < 0 {
 		return errors.New("instruction budget exhausted")
+	}
+	if e.budget&63 == 0 {
+		if err := e.ctx.Err(); err != nil {
+			return err
+		}
+		if !e.deadline.IsZero() && !time.Now().Before(e.deadline) {
+			return context.DeadlineExceeded
+		}
 	}
 	return nil
 }
@@ -514,7 +646,7 @@ func (e *execution) until() (context.Context, context.CancelFunc) {
 	return context.WithDeadline(e.ctx, e.deadline)
 }
 
-func (e *execution) await(pattern map[string]any) (any, error) {
+func (e *execution) await(pattern map[string]any, waitTimeout time.Duration, hasTimeout bool) (any, error) {
 	r := e.runtime
 	placement, err := extractPlacement(pattern)
 	if err != nil {
@@ -542,8 +674,17 @@ func (e *execution) await(pattern map[string]any) (any, error) {
 	}()
 	ctx, cancel := e.until()
 	defer cancel()
+	waitCtx := ctx
+	if hasTimeout {
+		var waitCancel context.CancelFunc
+		waitCtx, waitCancel = context.WithTimeout(ctx, waitTimeout)
+		defer waitCancel()
+	}
 	select {
-	case <-ctx.Done():
+	case <-waitCtx.Done():
+		if hasTimeout && ctx.Err() == nil {
+			return nil, nil
+		}
 		return nil, ctx.Err()
 	case matched := <-w.event:
 		if err := ctx.Err(); err != nil {
@@ -613,18 +754,33 @@ func (e *execution) call(x *Expression) (any, error) {
 	}
 	switch x.Text {
 	case "Event":
+		var waitTimeout time.Duration
+		var hasTimeout bool
+		if rawTimeout, ok := named["timeout"]; ok {
+			seconds, numOK := number(rawTimeout)
+			d, durOK := secondsDuration(seconds)
+			if !numOK || !durOK {
+				return nil, errors.New("Event timeout expects nonnegative seconds within the supported duration")
+			}
+			waitTimeout, hasTimeout = d, true
+			delete(named, "timeout")
+		}
+		if err := validateEventPattern(named); err != nil {
+			return nil, err
+		}
 		if err := validateEventDevice(named); err != nil {
 			return nil, err
 		}
-		return e.await(named)
+		return e.await(named, waitTimeout, hasTimeout)
 	case "Sleep":
 		seconds, ok := number(args[0])
-		if !ok || math.IsNaN(seconds) || seconds < 0 || seconds >= float64(math.MaxInt64)/float64(time.Second) {
+		d, durOK := secondsDuration(seconds)
+		if !ok || !durOK {
 			return nil, errors.New("Sleep expects nonnegative seconds within the supported duration")
 		}
 		ctx, cancel := e.until()
 		defer cancel()
-		timer := time.NewTimer(time.Duration(math.Round(seconds * float64(time.Second))))
+		timer := time.NewTimer(d)
 		defer timer.Stop()
 		select {
 		case <-ctx.Done():
@@ -760,6 +916,53 @@ func (e *execution) call(x *Expression) (any, error) {
 		return present, nil
 	case "Exists":
 		return args[0] != nil, nil
+	case "Len":
+		switch v := args[0].(type) {
+		case string:
+			return float64(utf8.RuneCountInString(v)), nil
+		case []any:
+			return float64(len(v)), nil
+		case []string:
+			return float64(len(v)), nil
+		case map[string]any:
+			return float64(len(v)), nil
+		default:
+			return nil, errors.New("Len expects a string, list, or object")
+		}
+	case "Now":
+		return float64(time.Now().UTC().UnixNano()) / float64(time.Second), nil
+	case "ParseTime":
+		raw, ok := args[0].(string)
+		if !ok {
+			return nil, errors.New("ParseTime expects an RFC3339 timestamp string")
+		}
+		t, err := time.Parse(time.RFC3339Nano, raw)
+		if err != nil {
+			return nil, errors.New("ParseTime expects an RFC3339 timestamp string")
+		}
+		return float64(t.UTC().UnixNano()) / float64(time.Second), nil
+	case "Abs":
+		n, ok := number(args[0])
+		if !ok {
+			return nil, errors.New("Abs expects a number")
+		}
+		return math.Abs(n), nil
+	case "Round":
+		n, ok := number(args[0])
+		if !ok {
+			return nil, errors.New("Round expects a number")
+		}
+		return math.Round(n), nil
+	case "Min", "Max":
+		a, aok := number(args[0])
+		b, bok := number(args[1])
+		if !aok || !bok {
+			return nil, fmt.Errorf("%s expects two numbers", x.Text)
+		}
+		if x.Text == "Min" {
+			return math.Min(a, b), nil
+		}
+		return math.Max(a, b), nil
 	}
 	return nil, fmt.Errorf("unknown function %q", x.Text)
 }
@@ -816,7 +1019,49 @@ func equal(a, b any) bool {
 	if ok && yes {
 		return x == y
 	}
+	if la, aok := asAnySlice(a); aok {
+		if lb, bok := asAnySlice(b); bok {
+			if len(la) != len(lb) {
+				return false
+			}
+			for i := range la {
+				if !equal(la[i], lb[i]) {
+					return false
+				}
+			}
+			return true
+		}
+	}
 	return reflect.DeepEqual(a, b)
+}
+
+func asAnySlice(v any) ([]any, bool) {
+	switch s := v.(type) {
+	case []any:
+		return s, true
+	case []string:
+		out := make([]any, len(s))
+		for i, item := range s {
+			out[i] = item
+		}
+		return out, true
+	default:
+		return nil, false
+	}
+}
+
+func (e *execution) equalValues(a, b any) bool {
+	if na, ok := a.(namedDeviceRef); ok {
+		if ref, err := e.resolveReference(na); err == nil {
+			a = ref
+		}
+	}
+	if nb, ok := b.(namedDeviceRef); ok {
+		if ref, err := e.resolveReference(nb); err == nil {
+			b = ref
+		}
+	}
+	return equal(a, b)
 }
 
 func access(v, k any) (any, error) {
@@ -835,6 +1080,11 @@ func access(v, k any) (any, error) {
 		}
 	}
 	if list, ok := v.([]any); ok {
+		if index, ok := number(k); ok && index >= 0 && index < float64(len(list)) && index == math.Trunc(index) {
+			return list[int(index)], nil
+		}
+	}
+	if list, ok := v.([]string); ok {
 		if index, ok := number(k); ok && index >= 0 && index < float64(len(list)) && index == math.Trunc(index) {
 			return list[int(index)], nil
 		}
@@ -932,25 +1182,45 @@ func (e *execution) expr(x *Expression) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		return binary(x.Text, left, right)
+		return e.binary(x.Text, left, right)
 	}
 	return nil, fmt.Errorf("unsupported expression %q", x.Kind)
 }
 
-func binary(op string, left, right any) (any, error) {
+func (e *execution) binary(op string, left, right any) (any, error) {
 	switch op {
 	case "==":
-		return equal(left, right), nil
+		return e.equalValues(left, right), nil
 	case "!=":
-		return !equal(left, right), nil
+		return !e.equalValues(left, right), nil
 	case "and", "or":
 		if b, ok := right.(bool); ok {
 			return b, nil
 		}
+	case "in", "not in":
+		found, err := e.containsValue(left, right)
+		if err != nil {
+			return nil, err
+		}
+		if op == "not in" {
+			return !found, nil
+		}
+		return found, nil
 	}
-	if l, ok := left.(string); ok && op == "+" {
+	if l, ok := left.(string); ok {
 		if r, ok := right.(string); ok {
-			return l + r, nil
+			switch op {
+			case "+":
+				return l + r, nil
+			case "<":
+				return l < r, nil
+			case "<=":
+				return l <= r, nil
+			case ">":
+				return l > r, nil
+			case ">=":
+				return l >= r, nil
+			}
 		}
 	}
 	a, x := number(left)
@@ -982,4 +1252,38 @@ func binary(op string, left, right any) (any, error) {
 		}
 	}
 	return nil, fmt.Errorf("invalid operands for %s", op)
+}
+
+func (e *execution) containsValue(needle, haystack any) (bool, error) {
+	switch h := haystack.(type) {
+	case []any:
+		for _, item := range h {
+			if e.equalValues(needle, item) {
+				return true, nil
+			}
+		}
+		return false, nil
+	case []string:
+		for _, item := range h {
+			if e.equalValues(needle, item) {
+				return true, nil
+			}
+		}
+		return false, nil
+	case map[string]any:
+		key, ok := needle.(string)
+		if !ok {
+			return false, errors.New("in expects a string key for object membership")
+		}
+		_, present := h[key]
+		return present, nil
+	case string:
+		sub, ok := needle.(string)
+		if !ok {
+			return false, errors.New("in expects a string substring")
+		}
+		return strings.Contains(h, sub), nil
+	default:
+		return false, errors.New("invalid operands for in")
+	}
 }

@@ -52,10 +52,26 @@ func (e *execution) statement(s Statement) error {
 		}
 		return e.block(s.Else)
 	case "for":
-		items, ok := value.([]any)
-		if !ok {
+		var items []any
+		switch list := value.(type) {
+		case []any:
+			items = list
+		case []string:
+			items = make([]any, len(list))
+			for i, item := range list {
+				items[i] = item
+			}
+		default:
 			return invalid(s.At, "for expects a list")
 		}
+		prev, hadPrev := e.env[s.Name]
+		defer func() {
+			if hadPrev {
+				e.env[s.Name] = prev
+			} else {
+				delete(e.env, s.Name)
+			}
+		}()
 		for _, item := range items {
 			e.env[s.Name] = item
 			done, err := e.iteration(s.Body)
@@ -75,7 +91,7 @@ func (e *execution) statement(s Statement) error {
 				if err != nil {
 					return err
 				}
-				if equal(value, candidate) {
+				if e.equalValues(value, candidate) {
 					return e.caseBody(clause.Body)
 				}
 			}

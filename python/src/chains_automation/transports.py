@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 from queue import Empty, Full, Queue
 from threading import Event
 from urllib.parse import unquote, urlsplit
@@ -126,6 +127,32 @@ return redis.call("XADD", KEYS[2], "MAXLEN", "~", "10000", id, "topic", ARGV[1],
 """
 
 
+STREAM_BATCH_SIZE = 32
+
+
+def _parse_stream_id(raw: bytes | str) -> tuple[int, int]:
+    text = raw.decode() if isinstance(raw, bytes) else raw
+    ms, _, seq = text.partition("-")
+    return int(ms), int(seq or "0")
+
+
+def _merge_streams(streams) -> list[tuple[str, bytes, dict]]:
+    merged = []
+    watermark = None
+    for key, rows in streams:
+        key_name = key.decode() if isinstance(key, bytes) else key
+        for index, (ident, fields) in enumerate(rows):
+            parsed = _parse_stream_id(ident)
+            merged.append((parsed, key_name, ident, fields))
+            if len(rows) == STREAM_BATCH_SIZE and index == len(rows) - 1:
+                if watermark is None or parsed < watermark:
+                    watermark = parsed
+    merged.sort(key=lambda item: item[0])
+    if watermark is not None:
+        merged = [item for item in merged if item[0] <= watermark]
+    return [(key_name, ident, fields) for _, key_name, ident, fields in merged]
+
+
 class RedisStreams:
     def __init__(self, address: str, namespace: str = "chains", types: tuple[str, ...] = ()):
         from redis import Redis
@@ -139,6 +166,7 @@ class RedisStreams:
         if not self._keys:
             self._keys = [self._prefix + "all"]
         self._cursor = self._heads()
+        self._buffer: deque[Delivery] = deque()
         self._disconnected = False
 
     def _heads(self) -> dict[str, bytes]:
@@ -155,23 +183,30 @@ class RedisStreams:
         )
 
     def receive(self, timeout: float) -> Delivery | None:
+        if self._buffer:
+            return self._buffer.popleft()
         try:
             if self._disconnected:
+                self._buffer.clear()
                 self._cursor = self._heads()
                 self._disconnected = False
                 return Delivery(reset=True)
-            streams = self._client.xread(self._cursor, count=1, block=max(1, int(timeout * 1000)))
+            streams = self._client.xread(
+                self._cursor, count=STREAM_BATCH_SIZE, block=max(1, int(timeout * 1000)),
+            )
         except self._connection_errors:
+            self._buffer.clear()
             self._disconnected = True
             return None
         if not streams:
             return None
-        key, (ident, fields) = min(
-            ((key, row) for key, rows in streams for row in rows),
-            key=lambda item: tuple(map(int, item[1][0].split(b"-"))),
-        )
-        self._cursor[key.decode()] = ident
-        return Delivery(fields[b"topic"].decode(), fields[b"data"])
+        for key_name, ident, fields in _merge_streams(streams):
+            self._cursor[key_name] = ident
+            topic = fields.get(b"topic")
+            data = fields.get(b"data")
+            if topic:
+                self._buffer.append(Delivery(topic.decode(), data or b""))
+        return self._buffer.popleft() if self._buffer else None
 
     def close(self) -> None:
         self._client.close()

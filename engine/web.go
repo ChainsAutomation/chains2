@@ -29,10 +29,69 @@ type browserSession struct {
 	role   string
 }
 
+type loginWindow struct {
+	failures int
+	resetAt  time.Time
+}
+
 type browserSessions struct {
 	cookie   string
 	mu       sync.Mutex
 	sessions map[string]browserSession
+	failures map[string]loginWindow
+}
+
+const (
+	maxLoginFailures = 20
+	loginWindowSpan  = time.Minute
+)
+
+func clientHost(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
+func (s *browserSessions) allowLogin(host string, now time.Time) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	w, ok := s.failures[host]
+	if !ok || !now.Before(w.resetAt) {
+		return true
+	}
+	return w.failures < maxLoginFailures
+}
+
+func (s *browserSessions) recordFailure(host string, now time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.failures == nil {
+		s.failures = map[string]loginWindow{}
+	}
+	if len(s.failures) > 1024 {
+		for k, v := range s.failures {
+			if !now.Before(v.resetAt) {
+				delete(s.failures, k)
+			}
+		}
+		if len(s.failures) > 1024 {
+			s.failures = map[string]loginWindow{}
+		}
+	}
+	w := s.failures[host]
+	if !now.Before(w.resetAt) {
+		w = loginWindow{resetAt: now.Add(loginWindowSpan)}
+	}
+	w.failures++
+	s.failures[host] = w
+}
+
+func (s *browserSessions) clearFailures(host string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.failures, host)
 }
 
 func (s *browserSessions) lookup(r *http.Request) (browserSession, bool) {
@@ -74,6 +133,7 @@ func (s *browserSessions) create(role string) (string, bool) {
 	defer s.mu.Unlock()
 	for key, session := range s.sessions {
 		if session.Err() != nil {
+			session.cancel()
 			delete(s.sessions, key)
 		}
 	}
@@ -175,11 +235,18 @@ func (sessions *browserSessions) routes(mux *http.ServeMux, base, token, househo
 			http.Error(w, "sign in from the console over HTTPS or loopback", http.StatusForbidden)
 			return
 		}
+		host := clientHost(r)
+		now := time.Now()
+		if !sessions.allowLogin(host, now) {
+			http.Error(w, "too many failed sign-in attempts", http.StatusTooManyRequests)
+			return
+		}
 		var body struct {
 			Token string `json:"token"`
 		}
 		d := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8192))
 		if d.Decode(&body) != nil || d.Decode(new(any)) != io.EOF {
+			sessions.recordFailure(host, now)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -190,9 +257,11 @@ func (sessions *browserSessions) routes(mux *http.ServeMux, base, token, househo
 			role = "household"
 		}
 		if role == "" {
+			sessions.recordFailure(host, now)
 			http.Error(w, "unauthorized", 401)
 			return
 		}
+		sessions.clearFailures(host)
 		sessions.revoke(r)
 		id, ok := sessions.create(role)
 		if !ok {

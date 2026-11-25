@@ -136,28 +136,32 @@ func (e *Engine) listDevices(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 400)
 		return
 	}
-	s := e.view.Snapshot()
+	var revision uint64
 	entries := []deviceEntry{}
 	class := q.Get("device_class")
-	for _, service := range s.Services {
-		for _, d := range service.Devices {
-			if q.Get("unassigned") == "true" && len(d.Location) > 0 || class != "" && !slices.Contains(d.Classes, class) || !filter.Match(d.Placement) {
-				continue
-			}
-			values := map[string]state.Attribute{}
-			for name, v := range s.Devices[state.Address(service.UUID, d.ID)] {
-				if hasAttribute(d, name) {
-					values[name] = v
+	unassigned := q.Get("unassigned") == "true"
+	e.view.Read(func(s state.Snapshot) {
+		revision = s.Revision
+		for _, service := range s.Services {
+			for _, d := range service.Devices {
+				if unassigned && len(d.Location) > 0 || class != "" && !slices.Contains(d.Classes, class) || !filter.Match(d.Placement) {
+					continue
 				}
+				values := map[string]state.Attribute{}
+				for name, v := range s.Devices[state.Address(service.UUID, d.ID)] {
+					if hasAttribute(d, name) {
+						values[name] = v
+					}
+				}
+				entries = append(entries, deviceEntry{service.UUID, service.Name, service.ServiceType, d, values})
 			}
-			entries = append(entries, deviceEntry{service.UUID, service.Name, service.ServiceType, d, values})
 		}
-	}
+	})
 	slices.SortFunc(entries, compareDeviceEntries)
 	writeJSON(w, 200, struct {
 		Revision uint64        `json:"revision"`
 		Devices  []deviceEntry `json:"devices"`
-	}{s.Revision, entries})
+	}{revision, entries})
 }
 
 func compareDeviceEntries(a, b deviceEntry) int {

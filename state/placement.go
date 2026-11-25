@@ -55,16 +55,19 @@ func (a *Authority) EditPlacement(service, device string, change func(PlacementO
 	if err != nil {
 		return Update{}, err
 	}
-	a.View.mu.Lock()
-	defer a.View.mu.Unlock()
+	a.View.mu.RLock()
+	epoch, revision := a.data.Epoch, a.data.Revision
+	a.View.mu.RUnlock()
 	a.placements[address] = next
 	effective := a.effective(s)
-	u := Update{Epoch: a.data.Epoch, Revision: a.data.Revision + 1, Service: &effective, placement: &placementWrite{address, next}}
+	u := Update{Epoch: epoch, Revision: revision + 1, Service: &effective, placement: &placementWrite{address, next}}
 	applied, err := a.db.commit("placement/"+chains.ID(), u)
 	if err != nil || !applied {
 		a.placements[address] = old
 		return Update{}, err
 	}
+	a.View.mu.Lock()
 	a.apply(u)
+	a.View.mu.Unlock()
 	return u, nil
 }

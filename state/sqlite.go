@@ -11,6 +11,7 @@ static int bind_string(sqlite3_stmt *s, int i, const char *value) {
 import "C"
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,7 +19,13 @@ import (
 	"unsafe"
 )
 
-type database struct{ handle *C.sqlite3 }
+type database struct {
+	handle      *C.sqlite3
+	stmtSeen    *C.sqlite3_stmt
+	stmtPut     *C.sqlite3_stmt
+	stmtDashGet *C.sqlite3_stmt
+	stmtDashPut *C.sqlite3_stmt
+}
 
 func openDB(path string) (*database, error) {
 	name := C.CString(path)
@@ -30,6 +37,8 @@ func openDB(path string) (*database, error) {
 		return nil, err
 	}
 	err := d.exec(`PRAGMA journal_mode=WAL;
+ PRAGMA synchronous=NORMAL;
+ PRAGMA busy_timeout=5000;
  CREATE TABLE IF NOT EXISTS entries (kind TEXT NOT NULL, owner TEXT NOT NULL, name TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(kind,owner,name));
  CREATE TABLE IF NOT EXISTS seen (id TEXT PRIMARY KEY, received INTEGER NOT NULL DEFAULT (unixepoch()));
  CREATE INDEX IF NOT EXISTS seen_received ON seen(received);
@@ -51,10 +60,35 @@ func openDB(path string) (*database, error) {
 			return nil, err
 		}
 	}
+	for _, item := range []struct {
+		dst   **C.sqlite3_stmt
+		query string
+	}{
+		{&d.stmtSeen, "INSERT OR IGNORE INTO seen(id) VALUES(?)"},
+		{&d.stmtPut, "INSERT OR REPLACE INTO entries(kind,owner,name,value) VALUES(?,?,?,?)"},
+		{&d.stmtDashGet, "SELECT value FROM dashboard_catalog WHERE id=1"},
+		{&d.stmtDashPut, "INSERT OR REPLACE INTO dashboard_catalog(id,value) VALUES(1,?)"},
+	} {
+		stmt, err := d.statement(item.query)
+		if err != nil {
+			d.close()
+			return nil, err
+		}
+		*item.dst = stmt
+	}
 	return d, nil
 }
 
-func (d *database) close()     { C.sqlite3_close(d.handle) }
+func (d *database) close() {
+	for _, stmt := range []*C.sqlite3_stmt{d.stmtSeen, d.stmtPut, d.stmtDashGet, d.stmtDashPut} {
+		if stmt != nil {
+			C.sqlite3_finalize(stmt)
+		}
+	}
+	if d.handle != nil {
+		C.sqlite3_close(d.handle)
+	}
+}
 func (d *database) err() error { return errors.New(C.GoString(C.sqlite3_errmsg(d.handle))) }
 
 func (d *database) exec(query string) error {
@@ -73,24 +107,33 @@ func (d *database) statement(query string, args ...string) (*C.sqlite3_stmt, err
 	if C.sqlite3_prepare_v2(d.handle, text, -1, &s, nil) != C.SQLITE_OK {
 		return nil, d.err()
 	}
+	if err := d.bind(s, args...); err != nil {
+		C.sqlite3_finalize(s)
+		return nil, err
+	}
+	return s, nil
+}
+
+func (d *database) bind(s *C.sqlite3_stmt, args ...string) error {
 	for i, arg := range args {
 		value := C.CString(arg)
 		rc := C.bind_string(s, C.int(i+1), value)
 		C.free(unsafe.Pointer(value))
 		if rc != C.SQLITE_OK {
-			C.sqlite3_finalize(s)
-			return nil, d.err()
+			return d.err()
 		}
 	}
-	return s, nil
+	return nil
 }
 
-func (d *database) run(query string, args ...string) error {
-	s, err := d.statement(query, args...)
-	if err != nil {
+func (d *database) execPrepared(s *C.sqlite3_stmt, args ...string) error {
+	defer func() {
+		C.sqlite3_reset(s)
+		C.sqlite3_clear_bindings(s)
+	}()
+	if err := d.bind(s, args...); err != nil {
 		return err
 	}
-	defer C.sqlite3_finalize(s)
 	if C.sqlite3_step(s) != C.SQLITE_DONE {
 		return d.err()
 	}
@@ -102,15 +145,20 @@ func (d *database) put(kind, owner, name string, value any) error {
 	if err != nil {
 		return err
 	}
-	return d.run("INSERT OR REPLACE INTO entries(kind,owner,name,value) VALUES(?,?,?,?)", kind, owner, name, string(raw))
+	return d.execPrepared(d.stmtPut, kind, owner, name, string(raw))
 }
 
 func (d *database) commit(id string, u Update) (bool, error) {
 	if err := d.exec("BEGIN IMMEDIATE"); err != nil {
 		return false, err
 	}
-	defer d.exec("ROLLBACK")
-	if err := d.run("INSERT OR IGNORE INTO seen(id) VALUES(?)", id); err != nil {
+	committed := false
+	defer func() {
+		if !committed {
+			_ = d.exec("ROLLBACK")
+		}
+	}()
+	if err := d.execPrepared(d.stmtSeen, id); err != nil {
 		return false, err
 	}
 	if C.sqlite3_changes(d.handle) == 0 {
@@ -141,7 +189,11 @@ func (d *database) commit(id string, u Update) (bool, error) {
 			return false, err
 		}
 	}
-	return true, d.exec("COMMIT")
+	if err := d.exec("COMMIT"); err != nil {
+		return false, err
+	}
+	committed = true
+	return true, nil
 }
 
 func (d *database) load(snapshot *Snapshot, placements map[string]PlacementOverride) error {
@@ -202,22 +254,21 @@ func loadEntry(s *Snapshot, kind, owner, name, value string) error {
 
 // DashboardCatalog reads dashboard configuration outside the replicated State tree.
 func (a *Authority) DashboardCatalog() (json.RawMessage, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.db.dashboardCatalog()
+	a.dashboardMu.RLock()
+	defer a.dashboardMu.RUnlock()
+	if len(a.dashboard) == 0 {
+		return nil, nil
+	}
+	return bytes.Clone(a.dashboard), nil
 }
 
 func (d *database) dashboardCatalog() (json.RawMessage, error) {
-	s, err := d.statement("SELECT value FROM dashboard_catalog WHERE id=1")
-	if err != nil {
-		return nil, err
-	}
-	defer C.sqlite3_finalize(s)
-	switch C.sqlite3_step(s) {
+	defer C.sqlite3_reset(d.stmtDashGet)
+	switch C.sqlite3_step(d.stmtDashGet) {
 	case C.SQLITE_DONE:
 		return nil, nil
 	case C.SQLITE_ROW:
-		return json.RawMessage(C.GoString((*C.char)(unsafe.Pointer(C.sqlite3_column_text(s, 0))))), nil
+		return json.RawMessage(C.GoString((*C.char)(unsafe.Pointer(C.sqlite3_column_text(d.stmtDashGet, 0))))), nil
 	default:
 		return nil, d.err()
 	}
@@ -227,13 +278,18 @@ func (d *database) dashboardCatalog() (json.RawMessage, error) {
 func (a *Authority) EditDashboardCatalog(edit func(json.RawMessage) (json.RawMessage, error)) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	current, err := a.db.dashboardCatalog()
-	if err != nil {
-		return err
-	}
+	a.dashboardMu.RLock()
+	current := bytes.Clone(a.dashboard)
+	a.dashboardMu.RUnlock()
 	next, err := edit(current)
 	if err != nil {
 		return err
 	}
-	return a.db.run("INSERT OR REPLACE INTO dashboard_catalog(id,value) VALUES(1,?)", string(next))
+	if err := a.db.execPrepared(a.db.stmtDashPut, string(next)); err != nil {
+		return err
+	}
+	a.dashboardMu.Lock()
+	a.dashboard = bytes.Clone(next)
+	a.dashboardMu.Unlock()
+	return nil
 }

@@ -80,7 +80,10 @@ func (e *Engine) observe(ctx context.Context, m chains.Message) error {
 
 func (e *Engine) commitObservation(ctx context.Context, m chains.Message, service chains.Service, batch chains.ObservationBatch) error {
 	var frames []chains.Message
+	var encoded [][]byte
 	update, _, err := e.authority.Observe(m, batch.Observations, func(u state.Update, changes []state.Change) error {
+		frames = frames[:0]
+		encoded = encoded[:0]
 		patch, err := chains.New(state.Updated, e.node.Source, u)
 		if err != nil {
 			return err
@@ -130,7 +133,8 @@ func (e *Engine) commitObservation(ctx context.Context, m chains.Message, servic
 				frames = append(frames, leaf)
 			}
 		}
-		for _, frame := range frames {
+		encoded = make([][]byte, len(frames))
+		for i, frame := range frames {
 			raw, err := chains.Encode(frame, e.node.Encoding)
 			if err != nil {
 				return err
@@ -138,6 +142,7 @@ func (e *Engine) commitObservation(ctx context.Context, m chains.Message, servic
 			if len(raw) > bus.MaxPayload {
 				return bus.ErrTooLarge
 			}
+			encoded[i] = raw
 		}
 		return nil
 	})
@@ -152,8 +157,8 @@ func (e *Engine) commitObservation(ctx context.Context, m chains.Message, servic
 			e.runtime.Dispatch(frame)
 		}
 	}
-	for _, frame := range frames {
-		if err := e.publishDerived(ctx, frame); err != nil {
+	for i, frame := range frames {
+		if err := e.publishDerivedEncoded(ctx, frame, encoded[i]); err != nil {
 			return err
 		}
 	}

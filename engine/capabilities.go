@@ -146,9 +146,8 @@ func (e *Engine) validateAttributes(d chains.Device, values map[string]json.RawM
 }
 
 func (e *Engine) ResolveSetter(ref rules.DeviceRef, name string, value any) (chains.Setter, map[string]any, error) {
-	s, known := e.view.Service(ref.ServiceID)
-	d, ok := device(s, ref.DeviceID)
-	if !known || !ok {
+	_, d, ok := e.view.ServiceDevice(ref.ServiceID, ref.DeviceID)
+	if !ok {
 		return chains.Setter{}, nil, errors.New("unknown device")
 	}
 	return e.resolveDeviceSetter(d, name, value)

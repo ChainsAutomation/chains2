@@ -22,6 +22,27 @@ type snapshotChunk struct {
 }
 
 func (e *Engine) sendSnapshot(ctx context.Context, request chains.Message) error {
+	if e.snapshotSlots == nil {
+		return e.writeSnapshot(ctx, request)
+	}
+	select {
+	case e.snapshotSlots <- struct{}{}:
+	default:
+		e.log.Debug("snapshot sender busy", "target", request.Source)
+		return nil
+	}
+	e.snapshotWG.Add(1)
+	go func() {
+		defer e.snapshotWG.Done()
+		defer func() { <-e.snapshotSlots }()
+		if err := e.writeSnapshot(ctx, request); err != nil && ctx.Err() == nil {
+			e.log.Warn("send state snapshot", "target", request.Source, "error", err)
+		}
+	}()
+	return nil
+}
+
+func (e *Engine) writeSnapshot(ctx context.Context, request chains.Message) error {
 	raw, err := json.Marshal(e.view.Snapshot())
 	if err != nil {
 		return err
@@ -38,7 +59,9 @@ func (e *Engine) sendSnapshot(ctx context.Context, request chains.Message) error
 		}
 		m.Target = request.Source
 		m.CausedBy(request)
-		if err = e.publishDerived(ctx, m); err != nil {
+		if e.local != nil {
+			e.mirror(m)
+		} else if err = e.node.Send(ctx, m); err != nil {
 			return err
 		}
 	}

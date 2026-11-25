@@ -336,35 +336,38 @@ func (e *Engine) operatorState(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "state filter requires its parent ID", http.StatusBadRequest)
 		return
 	}
-	s := e.view.Snapshot()
-	result := operator.State{Epoch: s.Epoch, Revision: s.Revision, Rows: []operator.StateRow{}}
-	for id, service := range s.Services {
-		if serviceID != "" && id != serviceID {
-			continue
-		}
-		if deviceID == "" {
-			result.Rows = append(result.Rows, operator.StateRow{Kind: "service", Service: id, ServiceName: service.Name})
-		}
-		for _, d := range service.Devices {
-			if deviceID != "" && d.ID != deviceID {
+	var result operator.State
+	e.view.Read(func(s state.Snapshot) {
+		result = operator.State{Epoch: s.Epoch, Revision: s.Revision, Rows: []operator.StateRow{}}
+		for id, service := range s.Services {
+			if serviceID != "" && id != serviceID {
 				continue
 			}
-			if attribute == "" {
-				result.Rows = append(result.Rows, operator.StateRow{Kind: "device", Service: id, ServiceName: service.Name, Device: d.ID, DeviceName: d.Name})
+			if deviceID == "" {
+				result.Rows = append(result.Rows, operator.StateRow{Kind: "service", Service: id, ServiceName: service.Name})
 			}
-			observed := s.Devices[state.Address(id, d.ID)]
-			for name := range d.Attributes {
-				if attribute != "" && attribute != name {
+			for _, d := range service.Devices {
+				if deviceID != "" && d.ID != deviceID {
 					continue
 				}
-				row := operator.StateRow{Kind: "attribute", Service: id, ServiceName: service.Name, Device: d.ID, DeviceName: d.Name, Attribute: name}
-				if value, ok := observed[name]; ok {
-					row.Value, row.Observed, row.Changed, row.Revision = value.Value, &value.ObservedAt, &value.ChangedAt, value.Revision
+				if attribute == "" {
+					result.Rows = append(result.Rows, operator.StateRow{Kind: "device", Service: id, ServiceName: service.Name, Device: d.ID, DeviceName: d.Name})
 				}
-				result.Rows = append(result.Rows, row)
+				observed := s.Devices[state.Address(id, d.ID)]
+				for name := range d.Attributes {
+					if attribute != "" && attribute != name {
+						continue
+					}
+					row := operator.StateRow{Kind: "attribute", Service: id, ServiceName: service.Name, Device: d.ID, DeviceName: d.Name, Attribute: name}
+					if value, ok := observed[name]; ok {
+						obs, chg := value.ObservedAt, value.ChangedAt
+						row.Value, row.Observed, row.Changed, row.Revision = value.Value, &obs, &chg, value.Revision
+					}
+					result.Rows = append(result.Rows, row)
+				}
 			}
 		}
-	}
+	})
 	sort.Slice(result.Rows, func(i, j int) bool {
 		a, b := result.Rows[i], result.Rows[j]
 		if a.Service != b.Service {

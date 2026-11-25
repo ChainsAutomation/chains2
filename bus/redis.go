@@ -3,7 +3,9 @@ package bus
 import (
 	"bufio"
 	"context"
+	"crypto/sha1"
 	"crypto/tls"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -17,16 +19,18 @@ import (
 )
 
 type Redis struct {
-	url    *url.URL
-	prefix string
-	keys   []string
-	output chan Delivery
-	ctx    context.Context
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
-	mu     sync.Mutex
-	writer *redisConn
-	closed bool
+	url      *url.URL
+	prefix   string
+	keys     []string
+	output   chan Delivery
+	ctx      context.Context
+	cancel   context.CancelFunc
+	wg       sync.WaitGroup
+	mu       sync.Mutex
+	writer   *redisConn
+	readerMu sync.Mutex
+	reader   *redisConn
+	closed   bool
 }
 
 type redisConn struct {
@@ -107,7 +111,15 @@ func (r *Redis) connect(ctx context.Context) (*redisConn, error) {
 }
 
 func (c *redisConn) command(args ...string) (any, error) {
-	if err := c.SetDeadline(time.Now().Add(4 * time.Second)); err != nil {
+	return c.commandCtx(context.Background(), args...)
+}
+
+func (c *redisConn) commandCtx(ctx context.Context, args ...string) (any, error) {
+	deadline := time.Now().Add(4 * time.Second)
+	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
+		deadline = ctxDeadline
+	}
+	if err := c.SetDeadline(deadline); err != nil {
 		return nil, err
 	}
 	var body strings.Builder
@@ -245,9 +257,22 @@ func mergeStreams(v any) []streamEntry {
 	return merged
 }
 
+func (r *Redis) setReader(c *redisConn) {
+	r.readerMu.Lock()
+	r.reader = c
+	r.readerMu.Unlock()
+}
+
 func (r *Redis) read(c *redisConn, cursor map[string]string) {
 	defer r.wg.Done()
 	defer close(r.output)
+	r.setReader(c)
+	defer func() {
+		r.setReader(nil)
+		if c != nil {
+			c.Close()
+		}
+	}()
 	for r.ctx.Err() == nil {
 		if c == nil {
 			var err error
@@ -267,8 +292,8 @@ func (r *Redis) read(c *redisConn, cursor map[string]string) {
 					return
 				}
 			}
+			r.setReader(c)
 			if !r.emit(Delivery{Reset: true}) {
-				c.Close()
 				return
 			}
 		}
@@ -276,8 +301,9 @@ func (r *Redis) read(c *redisConn, cursor map[string]string) {
 		for _, key := range r.keys {
 			args = append(args, cursor[key])
 		}
-		v, err := c.command(args...)
+		v, err := c.commandCtx(r.ctx, args...)
 		if err != nil {
+			r.setReader(nil)
 			c.Close()
 			c = nil
 			continue
@@ -294,13 +320,9 @@ func (r *Redis) read(c *redisConn, cursor map[string]string) {
 				}
 			}
 			if d.Topic != "" && !r.emit(d) {
-				c.Close()
 				return
 			}
 		}
-	}
-	if c != nil {
-		c.Close()
 	}
 }
 
@@ -317,6 +339,11 @@ const appendStreams = `
 local id = redis.call("XADD", KEYS[1], "MAXLEN", "~", "10000", "*", "topic", ARGV[1], "data", ARGV[2])
 return redis.call("XADD", KEYS[2], "MAXLEN", "~", "10000", id, "topic", ARGV[1], "data", ARGV[2])
 `
+
+var appendStreamsSHA = func() string {
+	sum := sha1.Sum([]byte(appendStreams))
+	return hex.EncodeToString(sum[:])
+}()
 
 func (r *Redis) Publish(ctx context.Context, topic string, data []byte) error {
 	if len(data) > MaxPayload {
@@ -341,7 +368,11 @@ func (r *Redis) Publish(ctx context.Context, topic string, data []byte) error {
 			return err
 		}
 	}
-	_, err := r.writer.command("EVAL", appendStreams, "2", r.prefix+"all", r.prefix+"type:"+parts[1], topic, string(data))
+	allKey, typeKey := r.prefix+"all", r.prefix+"type:"+parts[1]
+	_, err := r.writer.commandCtx(ctx, "EVALSHA", appendStreamsSHA, "2", allKey, typeKey, topic, string(data))
+	if err != nil && strings.Contains(err.Error(), "NOSCRIPT") {
+		_, err = r.writer.commandCtx(ctx, "EVAL", appendStreams, "2", allKey, typeKey, topic, string(data))
+	}
 	if err != nil {
 		r.writer.Close()
 		r.writer = nil
@@ -352,6 +383,11 @@ func (r *Redis) Publish(ctx context.Context, topic string, data []byte) error {
 func (r *Redis) Receive() <-chan Delivery { return r.output }
 func (r *Redis) Close() error {
 	r.cancel()
+	r.readerMu.Lock()
+	if r.reader != nil {
+		r.reader.Close()
+	}
+	r.readerMu.Unlock()
 	r.mu.Lock()
 	if r.writer != nil {
 		r.writer.Close()

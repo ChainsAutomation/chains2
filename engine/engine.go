@@ -51,15 +51,19 @@ type Engine struct {
 	mu              sync.Mutex
 	actions         map[string]*pending
 	seen            map[string]bool
-	seenOrder       []string
+	seenRing        [65536]string
+	seenPos         int
 	ready           atomic.Bool
 	actionTimeout   time.Duration
 	snapshotParts   [][]byte
 	queuedUpdates   []state.Update
 	snapshotPending string
 	snapshotSent    time.Time
+	snapshotSlots   chan struct{}
+	snapshotWG      sync.WaitGroup
 	pendingEvents   []chains.Message
-	schemas         sync.Map
+	schemasMu       sync.RWMutex
+	schemas         map[string]*jsonschema.Resolved
 	local           *hostedService
 	availability    map[string]presence
 	operator        *operatorMonitor
@@ -86,7 +90,7 @@ func Open(ctx context.Context, b bus.Bus, o Options) (*Engine, error) {
 	if log == nil {
 		log = slog.Default()
 	}
-	e := &Engine{node: sdk.Client{Bus: b, Encoding: o.Encoding, Source: o.ID}, authorityID: o.AuthorityID, eventTypes: o.EventTypes, view: state.NewView(), log: log, actions: map[string]*pending{}, seen: map[string]bool{}, availability: map[string]presence{}}
+	e := &Engine{node: sdk.Client{Bus: b, Encoding: o.Encoding, Source: o.ID}, authorityID: o.AuthorityID, eventTypes: o.EventTypes, view: state.NewView(), log: log, actions: map[string]*pending{}, seen: map[string]bool{}, snapshotSlots: make(chan struct{}, 4), schemas: map[string]*jsonschema.Resolved{}, availability: map[string]presence{}}
 	if o.LocalService != nil {
 		id := o.LocalService.ID()
 		if o.ID != o.AuthorityID || id == o.ID || !chains.Segment(id) {
@@ -177,6 +181,7 @@ func (e *Engine) Run(ctx context.Context) error {
 	defer stopOperator()
 	stopLocal := e.startLocal(ctx)
 	defer stopLocal()
+	defer e.snapshotWG.Wait()
 	var local <-chan localInput
 	if e.local != nil {
 		local = e.local.input
@@ -255,12 +260,12 @@ func (e *Engine) duplicate(m chains.Message) bool {
 	if e.seen[key] {
 		return true
 	}
-	e.seen[key] = true
-	e.seenOrder = append(e.seenOrder, key)
-	if len(e.seenOrder) > 65536 {
-		delete(e.seen, e.seenOrder[0])
-		e.seenOrder = e.seenOrder[1:]
+	if evicted := e.seenRing[e.seenPos]; evicted != "" {
+		delete(e.seen, evicted)
 	}
+	e.seen[key] = true
+	e.seenRing[e.seenPos] = key
+	e.seenPos = (e.seenPos + 1) % len(e.seenRing)
 	return false
 }
 
@@ -469,9 +474,8 @@ func (e *Engine) publishUpdate(ctx context.Context, cause chains.Message, u stat
 }
 
 func (e *Engine) report(ctx context.Context, m chains.Message) error {
-	s, ok := e.view.Service(m.Source)
-	d, known := device(s, m.DeviceID)
-	if !ok || !known {
+	s, d, known := e.view.ServiceDevice(m.Source, m.DeviceID)
+	if !known {
 		return errors.New("state report from unregistered device")
 	}
 	var values map[string]json.RawMessage
@@ -487,13 +491,18 @@ func (e *Engine) report(ctx context.Context, m chains.Message) error {
 	return e.commitObservation(ctx, m, s, chains.ObservationBatch{Observations: []chains.Observation{{DeviceID: m.DeviceID, Values: values}}})
 }
 
+const maxCachedSchemas = 4096
+
 func (e *Engine) schema(raw json.RawMessage) (*jsonschema.Resolved, error) {
 	if len(raw) == 0 {
 		return nil, errors.New("unknown schema")
 	}
-	if hit, ok := e.schemas.Load(string(raw)); ok {
-		return hit.(*jsonschema.Resolved), nil
+	e.schemasMu.RLock()
+	if hit, ok := e.schemas[string(raw)]; ok {
+		e.schemasMu.RUnlock()
+		return hit, nil
 	}
+	e.schemasMu.RUnlock()
 	var document jsonschema.Schema
 	if err := json.Unmarshal(raw, &document); err != nil {
 		return nil, err
@@ -502,8 +511,18 @@ func (e *Engine) schema(raw json.RawMessage) (*jsonschema.Resolved, error) {
 	if err != nil {
 		return nil, err
 	}
-	result, _ := e.schemas.LoadOrStore(string(raw), resolved)
-	return result.(*jsonschema.Resolved), nil
+	key := string(raw)
+	e.schemasMu.Lock()
+	if e.schemas == nil || len(e.schemas) >= maxCachedSchemas {
+		e.schemas = map[string]*jsonschema.Resolved{}
+	}
+	if existing, ok := e.schemas[key]; ok {
+		e.schemasMu.Unlock()
+		return existing, nil
+	}
+	e.schemas[key] = resolved
+	e.schemasMu.Unlock()
+	return resolved, nil
 }
 
 func (e *Engine) validate(raw, body json.RawMessage) error {
@@ -555,9 +574,8 @@ func (e *Engine) callAction(ctx context.Context, parent chains.Message, ref rule
 	if !chains.Segment(target) || !chains.Segment(id) {
 		return nil, errors.New("invalid device reference")
 	}
-	s, ok := e.view.Service(target)
-	d, known := device(s, id)
-	if !ok || !known || !contains(d.Actions, name) {
+	s, d, known := e.view.ServiceDevice(target, id)
+	if !known || !contains(d.Actions, name) {
 		return nil, errors.New("unknown device or action")
 	}
 	argsJSON, err := json.Marshal(args)

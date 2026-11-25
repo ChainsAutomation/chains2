@@ -120,3 +120,50 @@ func TestUpgradePreservesReportedLeaves(t *testing.T) {
 		t.Fatalf("unexpected restored reading: %+v", value)
 	}
 }
+
+func TestObserveDoesNotHoldViewLockDuringPreview(t *testing.T) {
+	a, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	reg := chains.Service{UUID: "sensor", Name: "Sensor", ServiceType: "sensor", Devices: []chains.Device{{ID: "one", Attributes: chains.Attributes("value")}}}
+	if _, err := a.Register(chains.Message{Source: "sensor", ID: "reg"}, reg); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.EditDashboardCatalog(func(json.RawMessage) (json.RawMessage, error) {
+		return json.RawMessage(`{"version":1,"revision":1}`), nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	m := chains.Message{ID: "obs1", Source: "sensor", DeviceID: "one", ObservedAt: now}
+	_, _, err = a.Observe(m, []chains.Observation{{DeviceID: "one", Values: map[string]json.RawMessage{"value": json.RawMessage("12")}}}, func(Update, []Change) error {
+		// Readers and DashboardCatalog must not deadlock while Observe is inside preview.
+		done := make(chan struct{})
+		go func() {
+			_ = a.Lookup("sensor/one")
+			if _, _, ok := a.ServiceDevice("sensor", "one"); !ok {
+				t.Errorf("ServiceDevice did not find registered device")
+			}
+			raw, err := a.DashboardCatalog()
+			if err != nil || string(raw) != `{"version":1,"revision":1}` {
+				t.Errorf("DashboardCatalog = %q, %v", raw, err)
+			}
+			close(done)
+		}()
+		select {
+		case <-done:
+			return nil
+		case <-time.After(time.Second):
+			t.Fatal("View.mu or dashboard read blocked during Observe preview")
+			return nil
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := a.Lookup("sensor/one")["value"]; got != float64(12) {
+		t.Fatalf("value = %v", got)
+	}
+}

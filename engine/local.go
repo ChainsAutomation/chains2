@@ -24,18 +24,24 @@ type localInput struct {
 	done    chan error
 }
 
+type localPublication struct {
+	message chains.Message
+	encoded []byte
+}
+
 type hostedService struct {
 	service      LocalService
 	input        chan localInput
-	publications chan chains.Message
+	publications chan localPublication
 	slots        chan struct{}
 	wg           sync.WaitGroup
 	results      map[string]*chains.Message
-	order        []string
+	order        [4096]string
+	orderPos     int
 }
 
 func newHosted(service LocalService) *hostedService {
-	return &hostedService{service: service, input: make(chan localInput, 128), publications: make(chan chains.Message, 1024), slots: make(chan struct{}, 16), results: map[string]*chains.Message{}}
+	return &hostedService{service: service, input: make(chan localInput, 128), publications: make(chan localPublication, 1024), slots: make(chan struct{}, 16), results: map[string]*chains.Message{}}
 }
 
 func (e *Engine) startLocal(ctx context.Context) func() {
@@ -60,11 +66,11 @@ func (e *Engine) startLocal(ctx context.Context) func() {
 			select {
 			case <-ctx.Done():
 				return
-			case m := <-h.publications:
+			case pub := <-h.publications:
 				client := e.node
-				client.Source = m.Source
-				if err := client.Send(ctx, m); err != nil {
-					e.log.Warn("local service bus publication failed", "type", m.Type, "error", err)
+				client.Source = pub.message.Source
+				if err := client.SendEncoded(ctx, pub.message, pub.encoded); err != nil {
+					e.log.Warn("local service bus publication failed", "type", pub.message.Type, "error", err)
 				}
 			}
 		}
@@ -88,8 +94,12 @@ func (h *hostedService) submit(ctx context.Context, m chains.Message, seed, mirr
 }
 
 func (e *Engine) mirror(m chains.Message) {
+	e.mirrorEncoded(m, nil)
+}
+
+func (e *Engine) mirrorEncoded(m chains.Message, encoded []byte) {
 	select {
-	case e.local.publications <- m:
+	case e.local.publications <- localPublication{message: m, encoded: encoded}:
 	default:
 		e.log.Warn("local service publication queue full", "type", m.Type, "id", m.ID)
 	}
@@ -120,9 +130,8 @@ func (e *Engine) executeLocal(ctx context.Context, m chains.Message) chains.Resu
 	if err := json.Unmarshal(m.Data, &a); err != nil {
 		return chains.Result{Status: chains.Failed, Error: "invalid action"}
 	}
-	s, known := e.view.Service(m.Target)
-	d, found := device(s, m.DeviceID)
-	if !known || !found || !contains(d.Actions, a.Name) {
+	s, d, found := e.view.ServiceDevice(m.Target, m.DeviceID)
+	if !found || !contains(d.Actions, a.Name) {
 		return chains.Result{Status: chains.Failed, Error: "unknown device or action"}
 	}
 	args, err := json.Marshal(a.Args)
@@ -196,12 +205,12 @@ func (e *Engine) rememberLocalOutcome(m chains.Message) {
 	key := m.Target + "/" + m.ActionID
 	h := e.local
 	if current, ok := h.results[key]; ok && current == nil {
-		h.results[key] = &m
-		h.order = append(h.order, key)
-		if len(h.order) > 4096 {
-			delete(h.results, h.order[0])
-			h.order = h.order[1:]
+		if evicted := h.order[h.orderPos]; evicted != "" {
+			delete(h.results, evicted)
 		}
+		h.results[key] = &m
+		h.order[h.orderPos] = key
+		h.orderPos = (h.orderPos + 1) % len(h.order)
 	}
 }
 
@@ -223,14 +232,18 @@ func (e *Engine) actLocal(ctx context.Context, m chains.Message) map[string]any 
 }
 
 func (e *Engine) publishDerived(ctx context.Context, m chains.Message) error {
+	return e.publishDerivedEncoded(ctx, m, nil)
+}
+
+func (e *Engine) publishDerivedEncoded(ctx context.Context, m chains.Message, encoded []byte) error {
 	if e.local == nil {
-		return e.node.Send(ctx, m)
+		return e.node.SendEncoded(ctx, m, encoded)
 	}
 	// The engine loop is the sole owner of ingress deduplication.
 	e.duplicate(m)
 	if m.Type == chains.AvailabilityChanged {
 		e.runtime.Dispatch(m)
 	}
-	e.mirror(m)
+	e.mirrorEncoded(m, encoded)
 	return nil
 }

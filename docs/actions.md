@@ -50,4 +50,4 @@ An outcome describes the command. The service reports what the device actually d
 
 ## Upgrading from wire v2
 
-Upgrade engines and publishers together. Services re-register their capabilities on wire v3. SQLite preserves leaf values and timestamps for unchanged paths. Zigbee2MQTT publishes percentage brightness under `dimlevel` on the next device report. Update rules that previously read native `brightness` or passed native values to `set_brightness`.
+Upgrade engines and publishers together. Services re-register their capabilities on wire v3. SQLite preserves leaf values and timestamps for unchanged paths. Frigate starts its camera paths from new observations, and Radicale discards any queued envelopes from the previous wire version. Zigbee2MQTT publishes percentage brightness under `dimlevel` on the next device report. Update rules that previously read native `brightness` or passed native values to `set_brightness`.

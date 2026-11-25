@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"slices"
@@ -230,13 +231,22 @@ func (e *Engine) dashboardRoutes(mux *http.ServeMux, sessions *browserSessions, 
 		http.Error(w, "dashboard catalog unavailable", 500)
 		return dashboardCatalog{}, false
 	}
-	handle("GET "+base, func(w http.ResponseWriter, _ *http.Request) {
+	handle("GET "+base, func(w http.ResponseWriter, r *http.Request) {
 		c, ok := catalog(w)
 		if !ok {
 			return
 		}
-		snapshot := e.view.Snapshot()
-		devices := dashboardDevices(snapshot)
+		epoch, rev := e.view.Position()
+		etag := fmt.Sprintf(`"%s:%d:%d"`, epoch, rev, c.Revision)
+		w.Header().Set("ETag", etag)
+		if r.Header.Get("If-None-Match") == etag {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		var devices []deviceEntry
+		e.view.Read(func(snapshot state.Snapshot) {
+			devices = dashboardDevices(snapshot)
+		})
 		layouts := make([]dashboardLayout, 0, len(c.Dashboards))
 		for _, board := range c.Dashboards {
 			layouts = append(layouts, resolveDashboard(board, devices))
@@ -301,7 +311,11 @@ func (e *Engine) dashboardRoutes(mux *http.ServeMux, sessions *browserSessions, 
 			http.Error(w, err.Error(), 400)
 			return
 		}
-		writeJSON(w, 200, resolveDashboard(req.Board, dashboardDevices(e.view.Snapshot())))
+		var devices []deviceEntry
+		e.view.Read(func(snapshot state.Snapshot) {
+			devices = dashboardDevices(snapshot)
+		})
+		writeJSON(w, 200, resolveDashboard(req.Board, devices))
 	})
 	handle("POST "+householdBase+"/actions", e.dashboardAction)
 }
@@ -316,8 +330,7 @@ func (e *Engine) dashboardAction(w http.ResponseWriter, r *http.Request) {
 	if !dashboardBody(w, r, &req) {
 		return
 	}
-	s, _ := e.view.Service(req.Service)
-	d, known := device(s, req.Device)
+	s, d, known := e.view.ServiceDevice(req.Service, req.Device)
 	if !known || req.Service == chains.OperatorService {
 		http.Error(w, "device unavailable", 404)
 		return

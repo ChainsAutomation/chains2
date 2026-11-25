@@ -55,6 +55,12 @@ func Validate(rule Rule) error {
 	if rule.Concurrency < 0 || rule.Concurrency > 1024 || rule.Timeout < 0 {
 		return fmt.Errorf("invalid settings for rule %q", rule.Name)
 	}
+	if rule.Mode != "" && rule.Mode != "drop" && rule.Mode != "restart" {
+		return fmt.Errorf("invalid mode %q for rule %q", rule.Mode, rule.Name)
+	}
+	if rule.Mode == "restart" && rule.Concurrency > 1 {
+		return fmt.Errorf("rule %q cannot combine mode \"restart\" with concurrency > 1", rule.Name)
+	}
 	start := openingIndex(rule)
 	if start < 0 {
 		return fmt.Errorf("rule %q needs an opening Event(), Every(), or Time()", rule.Name)
@@ -82,94 +88,131 @@ func Validate(rule Rule) error {
 		}
 		names[opening.Name] = true
 	}
-	return validateBlock(rule.Body[start+1:], names, 0, 0)
+	_, err := validateBlock(rule.Body[start+1:], names, 0, 0)
+	return err
 }
 
-func validateBlock(body []Statement, names map[string]bool, loops, switches int) error {
+func validateBlock(body []Statement, names map[string]bool, loops, switches int) (bool, error) {
+	returned := false
 	for _, s := range body {
 		switch s.Kind {
 		case "break":
 			if loops+switches == 0 {
-				return invalid(s.At, "break needs a loop or switch")
+				return false, invalid(s.At, "break needs a loop or switch")
 			}
 			continue
 		case "continue":
 			if loops == 0 {
-				return invalid(s.At, "continue needs a loop")
+				return false, invalid(s.At, "continue needs a loop")
 			}
 			continue
 		case "return":
+			returned = true
 			continue
 		}
 		if err := validateExpr(s.Value, names, false, false); err != nil {
-			return err
+			return false, err
 		}
 		switch s.Kind {
 		case "expression":
 		case "assign":
 			if !variable(s.Name) {
-				return invalid(s.At, "invalid variable %q", s.Name)
+				return false, invalid(s.At, "invalid variable %q", s.Name)
 			}
 			names[s.Name] = true
 		case "if":
 			onTrue, onFalse := maps.Clone(names), maps.Clone(names)
 			if len(s.Body) == 0 {
-				return invalid(s.At, "expected a nonempty block")
+				return false, invalid(s.At, "expected a nonempty block")
 			}
-			if err := validateBlock(s.Body, onTrue, loops, switches); err != nil {
-				return err
+			trueRet, err := validateBlock(s.Body, onTrue, loops, switches)
+			if err != nil {
+				return false, err
 			}
-			if err := validateBlock(s.Else, onFalse, loops, switches); err != nil {
-				return err
+			falseRet, err := validateBlock(s.Else, onFalse, loops, switches)
+			if err != nil {
+				return false, err
 			}
-			for name := range onTrue {
-				if onFalse[name] {
-					names[name] = true
+			switch {
+			case trueRet && falseRet:
+				returned = true
+			case trueRet:
+				maps.Copy(names, onFalse)
+			case falseRet:
+				maps.Copy(names, onTrue)
+			default:
+				for name := range onTrue {
+					if onFalse[name] {
+						names[name] = true
+					}
 				}
 			}
 		case "for", "while":
 			inside := maps.Clone(names)
 			if s.Kind == "for" {
 				if !variable(s.Name) {
-					return invalid(s.At, "invalid loop variable %q", s.Name)
+					return false, invalid(s.At, "invalid loop variable %q", s.Name)
 				}
 				inside[s.Name] = true
 			}
 			if len(s.Body) == 0 {
-				return invalid(s.At, "expected a nonempty block")
+				return false, invalid(s.At, "expected a nonempty block")
 			}
-			if err := validateBlock(s.Body, inside, loops+1, switches); err != nil {
-				return err
+			if _, err := validateBlock(s.Body, inside, loops+1, switches); err != nil {
+				return false, err
 			}
 		case "switch":
 			if len(s.Cases) == 0 {
-				return invalid(s.At, "switch needs a case")
+				return false, invalid(s.At, "switch needs a case")
 			}
 			hasDefault := false
+			allRet := true
+			var common map[string]bool
 			for _, clause := range s.Cases {
 				if len(clause.Values) == 0 {
 					if hasDefault {
-						return invalid(s.At, "duplicate default case")
+						return false, invalid(s.At, "duplicate default case")
 					}
 					hasDefault = true
 				}
 				for _, v := range clause.Values {
 					if err := validateExpr(v, names, false, false); err != nil {
-						return err
+						return false, err
 					}
 				}
 				if len(clause.Body) == 0 {
-					return invalid(s.At, "expected a nonempty case")
+					return false, invalid(s.At, "expected a nonempty case")
 				}
-				if err := validateBlock(clause.Body, maps.Clone(names), loops, switches+1); err != nil {
-					return err
+				branch := maps.Clone(names)
+				caseRet, err := validateBlock(clause.Body, branch, loops, switches+1)
+				if err != nil {
+					return false, err
+				}
+				if !caseRet {
+					allRet = false
+					if common == nil {
+						common = branch
+					} else {
+						for name := range common {
+							if !branch[name] {
+								delete(common, name)
+							}
+						}
+					}
+				}
+			}
+			if hasDefault {
+				if allRet {
+					returned = true
+				} else if common != nil {
+					maps.Copy(names, common)
 				}
 			}
 		default:
-			return invalid(s.At, "unknown statement %q", s.Kind)
+			return false, invalid(s.At, "unknown statement %q", s.Kind)
 		}
 	}
-	return nil
+	return returned, nil
 }
 
 func validateExpr(x *Expression, names map[string]bool, shorthand, pure bool) error {
@@ -227,7 +270,22 @@ func validateExpr(x *Expression, names map[string]bool, shorthand, pure bool) er
 }
 
 func bareArgument(function, key string) bool {
-	return (function == "Event" && key != "device") || ((function == "Action" || function == "Set" || function == "Device" || function == "Devices") && (key == "service_name" || key == "device_name" || key == "service_id" || key == "device_id"))
+	if function == "Event" && key != "device" && key != "timeout" {
+		return true
+	}
+	if function == "Devices" && (key == "device_class" || key == "location" || key == "tag") {
+		return true
+	}
+	return (function == "Action" || function == "Set" || function == "Device" || function == "Devices") &&
+		(key == "service_name" || key == "device_name" || key == "service_id" || key == "device_id")
+}
+
+func pureFunction(name string) bool {
+	switch name {
+	case "Has", "Exists", "Device", "Len", "ParseTime", "Min", "Max", "Abs", "Round":
+		return true
+	}
+	return false
 }
 
 func validateCall(x *Expression, names map[string]bool, pure, opening bool) error {
@@ -250,11 +308,14 @@ func validateCall(x *Expression, names map[string]bool, pure, opening bool) erro
 		}
 	}
 	bad := func(want string) error { return invalid(x.At, "%s expects %s", x.Text, want) }
-	if pure && !opening && x.Text != "Has" && x.Text != "Exists" && x.Text != "Device" {
+	if pure && !opening && !pureFunction(x.Text) {
 		return invalid(x.At, "%s cannot run before the opening match", x.Text)
 	}
 	switch x.Text {
 	case "Event":
+		if opening && keys["timeout"] {
+			return invalid(x.At, "opening Event cannot set timeout")
+		}
 		if keys["device"] && (keys["service_id"] || keys["device_id"] || keys["service_name"] || keys["device_name"]) {
 			return bad("device= or separate service and device selectors")
 		}
@@ -305,11 +366,15 @@ func validateCall(x *Expression, names map[string]bool, pure, opening bool) erro
 		if positional != 0 || len(keys) != 2 || !(keys["service_id"] && keys["device_id"] || keys["service_name"] && keys["device_name"]) {
 			return bad("a service/device ID pair or a service/device name pair")
 		}
-	case "Exists", "Every", "State", "Sleep":
+	case "Now":
+		if positional != 0 || len(keys) > 0 {
+			return bad("no arguments")
+		}
+	case "Exists", "Every", "State", "Sleep", "Len", "ParseTime", "Abs", "Round":
 		if positional != 1 || len(keys) > 0 {
 			return bad("one positional argument")
 		}
-	case "Has":
+	case "Has", "Min", "Max":
 		if positional != 2 || len(keys) > 0 {
 			return bad("two positional arguments")
 		}
@@ -325,6 +390,9 @@ func Format(rule Rule) (string, error) {
 		return "", err
 	}
 	var out strings.Builder
+	if rule.Mode != "" {
+		fmt.Fprintf(&out, "rule.mode = %q\n", rule.Mode)
+	}
 	if rule.Concurrency != 0 {
 		fmt.Fprintf(&out, "rule.concurrency = %d\n", rule.Concurrency)
 	}
@@ -364,9 +432,15 @@ func formatBlock(out *strings.Builder, body []Statement, depth int) {
 		case "if":
 			line("if " + formatExpr(s.Value) + ":")
 			formatBlock(out, s.Body, depth+1)
-			if len(s.Else) > 0 {
+			branch := s
+			for len(branch.Else) == 1 && branch.Else[0].Kind == "if" {
+				branch = branch.Else[0]
+				line("elseif " + formatExpr(branch.Value) + ":")
+				formatBlock(out, branch.Body, depth+1)
+			}
+			if len(branch.Else) > 0 {
 				line("else:")
-				formatBlock(out, s.Else, depth+1)
+				formatBlock(out, branch.Else, depth+1)
 			}
 		case "switch":
 			line("switch " + formatExpr(s.Value) + ":")
@@ -386,7 +460,9 @@ func formatBlock(out *strings.Builder, body []Statement, depth int) {
 	}
 }
 
-func formatExpr(x *Expression) string {
+func formatExpr(x *Expression) string { return formatExprPrec(x, 0) }
+
+func formatExprPrec(x *Expression, minPrec int) string {
 	switch x.Kind {
 	case "literal":
 		switch v := x.Literal.(type) {
@@ -402,17 +478,37 @@ func formatExpr(x *Expression) string {
 	case "name":
 		return x.Text
 	case "field":
-		return formatExpr(x.Left) + "." + x.Text
+		return formatExprPrec(x.Left, 8) + "." + x.Text
 	case "index":
-		return formatExpr(x.Left) + "[" + formatExpr(x.Right) + "]"
+		return formatExprPrec(x.Left, 8) + "[" + formatExprPrec(x.Right, 0) + "]"
 	case "unary":
-		return "(" + x.Text + " " + formatExpr(x.Left) + ")"
+		var out string
+		prec := 7
+		if x.Text == "not" {
+			prec = 3
+			out = "not " + formatExprPrec(x.Left, 3)
+		} else {
+			child := formatExprPrec(x.Left, 7)
+			if x.Left.Kind == "unary" && x.Left.Text != "not" {
+				child = "(" + child + ")"
+			}
+			out = x.Text + child
+		}
+		if prec < minPrec {
+			return "(" + out + ")"
+		}
+		return out
 	case "binary":
-		return "(" + formatExpr(x.Left) + " " + x.Text + " " + formatExpr(x.Right) + ")"
+		rank := precedence[x.Text]
+		out := formatExprPrec(x.Left, rank) + " " + x.Text + " " + formatExprPrec(x.Right, rank+1)
+		if rank < minPrec {
+			return "(" + out + ")"
+		}
+		return out
 	}
 	args := make([]string, 0, len(x.Arguments))
 	for _, a := range x.Arguments {
-		item := formatExpr(a.Value)
+		item := formatExprPrec(a.Value, 0)
 		if x.Kind == "object" {
 			item = strconv.Quote(a.Name) + ": " + item
 		} else if a.Name != "" {

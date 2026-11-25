@@ -25,6 +25,13 @@ extern void chainsMQTTDisconnected(void *);
 static void disconnected_callback(struct mosquitto *client, void *id, int reason) {
  chainsMQTTDisconnected(id);
 }
+static int use_os_certs(struct mosquitto *m) {
+#ifdef MOSQ_OPT_TLS_USE_OS_CERTS
+ return mosquitto_int_option(m, MOSQ_OPT_TLS_USE_OS_CERTS, 1);
+#else
+ return mosquitto_tls_set(m, NULL, "/etc/ssl/certs", NULL, NULL, NULL);
+#endif
+}
 static struct mosquitto *new_client(char *id, uintptr_t h) {
  struct mosquitto *m = mosquitto_new(id, true, (void *)h);
  if (m) {
@@ -72,6 +79,8 @@ type MQTT struct {
 	closed         bool
 	ackMu          sync.Mutex
 	acks           map[C.int]chan error
+	earlyAcks      map[C.int]error
+	inFlightAck    atomic.Int32
 	done           chan struct{}
 	raw            bool
 	disconnected   chan struct{}
@@ -117,7 +126,7 @@ func openMQTT(ctx context.Context, address, namespace string, sub Subscription, 
 			return nil, err
 		}
 	}
-	m := &MQTT{prefix: namespace + "/", output: make(chan Delivery, 1024), ready: make(chan error, 1), acks: make(map[C.int]chan error), done: make(chan struct{})}
+	m := &MQTT{prefix: namespace + "/", output: make(chan Delivery, 1024), ready: make(chan error, 1), acks: make(map[C.int]chan error), earlyAcks: make(map[C.int]error), done: make(chan struct{})}
 	if raw {
 		m.prefix = ""
 		m.raw = true
@@ -162,9 +171,7 @@ func openMQTT(ctx context.Context, address, namespace string, sub Subscription, 
 			err = mqttError(C.mosquitto_tls_set(m.client, trust, nil, nil, nil, nil))
 			C.free(unsafe.Pointer(trust))
 		} else {
-			trust := C.CString("/etc/ssl/certs")
-			err = mqttError(C.mosquitto_tls_set(m.client, nil, trust, nil, nil, nil))
-			C.free(unsafe.Pointer(trust))
+			err = mqttError(C.use_os_certs(m.client))
 		}
 		if err != nil {
 			return nil, err
@@ -222,9 +229,6 @@ func chainsMQTTConnect(id unsafe.Pointer, reason C.int) {
 		m.signal(fmt.Errorf("MQTT connection rejected: %d", reason))
 		return
 	}
-	if m.connected {
-		m.deliver(Delivery{Reset: true})
-	}
 	m.pending = len(m.filters)
 	for _, filter := range m.filters {
 		topic := C.CString(filter)
@@ -254,6 +258,9 @@ func chainsMQTTSubscribe(id unsafe.Pointer, mid, reason C.int) {
 }
 
 func (m *MQTT) subscribed() {
+	if m.connected {
+		m.deliver(Delivery{Reset: true})
+	}
 	m.connected = true
 	m.signal(nil)
 }
@@ -290,15 +297,17 @@ func (m *MQTT) deliver(d Delivery) {
 //export chainsMQTTPublished
 func chainsMQTTPublished(id unsafe.Pointer, mid, reason C.int) {
 	m := cgo.Handle(uintptr(id)).Value().(*MQTT)
+	var err error
+	if reason >= 128 {
+		err = fmt.Errorf("MQTT publish rejected: %d", reason)
+	}
 	m.ackMu.Lock()
 	defer m.ackMu.Unlock()
 	if result := m.acks[mid]; result != nil {
-		var err error
-		if reason >= 128 {
-			err = fmt.Errorf("MQTT publish rejected: %d", reason)
-		}
 		result <- err
 		delete(m.acks, mid)
+	} else if m.inFlightAck.Load() > 0 {
+		m.earlyAcks[mid] = err
 	}
 }
 
@@ -310,17 +319,21 @@ func (m *MQTT) Publish(ctx context.Context, topic string, data []byte) error {
 // PublishAcknowledged waits for the QoS 1 broker acknowledgement.
 func (m *MQTT) PublishAcknowledged(ctx context.Context, topic string, data []byte, retain bool) error {
 	result := make(chan error, 1)
+	m.inFlightAck.Add(1)
 	mid, err := m.publish(ctx, topic, data, retain, result)
-	if err != nil {
-		return err
-	}
 	defer func() {
 		m.ackMu.Lock()
-		if m.acks[mid] == result {
+		if err == nil && m.acks[mid] == result {
 			delete(m.acks, mid)
+		}
+		if m.inFlightAck.Add(-1) == 0 {
+			clear(m.earlyAcks)
 		}
 		m.ackMu.Unlock()
 	}()
+	if err != nil {
+		return err
+	}
 	select {
 	case err := <-result:
 		return err
@@ -357,13 +370,16 @@ func (m *MQTT) publish(ctx context.Context, topic string, data []byte, retain bo
 		p = unsafe.Pointer(&data[0])
 	}
 	var mid C.int
-	if result != nil {
-		m.ackMu.Lock()
-		defer m.ackMu.Unlock()
-	}
 	err := mqttError(C.mosquitto_publish(m.client, &mid, name, C.int(len(data)), p, 1, C.bool(retain)))
 	if err == nil && result != nil {
-		m.acks[mid] = result
+		m.ackMu.Lock()
+		if ackErr, early := m.earlyAcks[mid]; early {
+			delete(m.earlyAcks, mid)
+			result <- ackErr
+		} else {
+			m.acks[mid] = result
+		}
+		m.ackMu.Unlock()
 	}
 	return mid, err
 }

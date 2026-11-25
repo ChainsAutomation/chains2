@@ -142,8 +142,87 @@ func (m Message) Validate(now time.Time) error {
 var ErrExpired = errors.New("message expired")
 
 func (m Message) Fields() map[string]any {
-	var fields map[string]any
-	data, _ := json.Marshal(m)
-	_ = json.Unmarshal(data, &fields)
+	fields := map[string]any{
+		"version":     float64(m.Version),
+		"id":          m.ID,
+		"type":        m.Type,
+		"source":      m.Source,
+		"observed_at": m.ObservedAt.Format(time.RFC3339Nano),
+	}
+	if len(m.Data) > 0 {
+		var data any
+		_ = json.Unmarshal(m.Data, &data)
+		fields["data"] = data
+	} else {
+		fields["data"] = nil
+	}
+	if m.Epoch != "" {
+		fields["epoch"] = m.Epoch
+	}
+	if m.Revision != 0 {
+		fields["revision"] = float64(m.Revision)
+	}
+	if m.ServiceName != "" {
+		fields["service_name"] = m.ServiceName
+	}
+	if m.DeviceName != "" {
+		fields["device_name"] = m.DeviceName
+	}
+	if m.ServiceID != "" {
+		fields["service_id"] = m.ServiceID
+	}
+	if m.ServiceType != "" {
+		fields["service_type"] = m.ServiceType
+	}
+	if m.DeviceID != "" {
+		fields["device_id"] = m.DeviceID
+	}
+	if len(m.DeviceClasses) > 0 {
+		fields["device_classes"] = stringsToAny(m.DeviceClasses)
+	}
+	if len(m.Location) > 0 {
+		fields["location"] = stringsToAny(m.Location)
+	}
+	if len(m.Tags) > 0 {
+		fields["tags"] = stringsToAny(m.Tags)
+	}
+	if m.Target != "" {
+		fields["target"] = m.Target
+	}
+	if m.SchemaVersion != "" {
+		fields["schema_version"] = m.SchemaVersion
+	}
+	if m.ExpiresAt != nil {
+		fields["expires_at"] = m.ExpiresAt.Format(time.RFC3339Nano)
+	}
+	if m.CausationID != "" {
+		fields["causation_id"] = m.CausationID
+	}
+	if m.CorrelationID != "" {
+		fields["correlation_id"] = m.CorrelationID
+	}
+	if m.ActionID != "" {
+		fields["action_id"] = m.ActionID
+	}
+	if m.Silent {
+		fields["silent"] = true
+	}
+	if len(m.Observations) > 0 {
+		raw, err := json.Marshal(m.Observations)
+		if err == nil {
+			var obs any
+			if json.Unmarshal(raw, &obs) == nil {
+				fields["observations"] = obs
+			}
+		}
+	}
 	return fields
+}
+
+func stringsToAny(values []string) []any {
+	out := make([]any, len(values))
+	for i, v := range values {
+		out[i] = v
+	}
+	return out
 }

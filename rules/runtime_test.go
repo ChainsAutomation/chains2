@@ -606,3 +606,103 @@ Action("independent", device=Device(service_id=test, device_id=test))
 		}
 	}
 }
+
+func TestObservationListsNamedEqualityAndPrimitives(t *testing.T) {
+	r, h := captureRuntime(t, `
+led = Device(service_name=LEDPanel, device_name=panel0)
+ev = Event(type="sample")
+x = "outer"
+for tag in ev.tags:
+    x = tag
+if x != "bedroom":
+    return
+if ev.location[0] != "House" or ev.tags != ["bedroom"] or "bedroom" not in ev.tags or "light" not in ev.device_classes:
+    return
+if ev.device != led:
+    return
+switch ev.device:
+    case led:
+        age = Now() - ParseTime("2020-01-01T00:00:00Z")
+        if age > 0 and "2020-01-01T00:00:00Z" < "2025-01-01T00:00:00Z" and Len(ev.location) == 2 and "room" in "bedroom":
+            Action("ok", device=led, value=Min(Max(Round(Abs(-2.4)), 1), 5))
+`)
+	obs, _ := chains.NewObservation("panel0", map[string]any{"power": true}, nil)
+	obs.DeviceName = "panel0"
+	obs.DeviceClasses = []string{"light"}
+	obs.Placement = chains.Placement{Location: []string{"House", "Bedroom"}, Tags: []string{"bedroom"}}
+	m, _ := chains.New("sample", "engine", nil)
+	m.ServiceID, m.ServiceName = "led", "LEDPanel"
+	m.Observations = []chains.Observation{obs}
+	r.Dispatch(m)
+	got := receiveInvocation(t, h)
+	if got.name != "ok" || got.args["value"] != float64(2) {
+		t.Fatalf("unexpected invocation: %+v", got)
+	}
+}
+
+func TestForLoopPreservesOuterVariable(t *testing.T) {
+	r, h := captureRuntime(t, `
+Event(type="go")
+item = "outer"
+for item in ["a", "b"]:
+    Action("step", device=Device(service_id=test, device_id=test), value=item)
+Action("after", device=Device(service_id=test, device_id=test), value=item)
+`)
+	dispatchEvent(r, "go", "test", nil)
+	for _, want := range []string{"a", "b", "outer"} {
+		if got := receiveInvocation(t, h); got.args["value"] != want {
+			t.Fatalf("got %v, want %q", got.args["value"], want)
+		}
+	}
+}
+
+func TestEventWaitTimeoutReturnsNull(t *testing.T) {
+	r, h := captureRuntime(t, `
+rule.timeout = 5
+Event(type="start")
+next = Event(type="never", timeout=0.05)
+if next == null:
+    Action("timed_out_gracefully", device=Device(service_id=test, device_id=test))
+`)
+	dispatchEvent(r, "start", "test", nil)
+	if got := receiveInvocation(t, h); got.name != "timed_out_gracefully" {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestRuleModeRestartCancelsPreviousRun(t *testing.T) {
+	r, h := captureRuntime(t, `
+rule.mode = "restart"
+rule.timeout = 5
+ev = Event(type="motion")
+Sleep(0.08)
+Action("off", device=Device(service_id=test, device_id=test), value=ev.data.seq)
+`)
+	dispatchEvent(r, "motion", "test", map[string]any{"seq": 1})
+	time.Sleep(30 * time.Millisecond)
+	dispatchEvent(r, "motion", "test", map[string]any{"seq": 2})
+	got := receiveInvocation(t, h)
+	if got.name != "off" || got.args["value"] != float64(2) {
+		t.Fatalf("expected restarted run seq=2, got %+v", got)
+	}
+	select {
+	case extra := <-h.calls:
+		t.Fatalf("cancelled run unexpectedly fired: %+v", extra)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func TestRejectCapturedNonStringEventSelector(t *testing.T) {
+	rule, err := Parse("captured", `
+light = Device(service_name=LEDPanel, device_name=panel0)
+Event(device_class=light)
+Action("seen", device=light)
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := captureHost{calls: make(chan invocation, 1)}
+	if _, err := New(context.Background(), host, Calendar{}, slog.New(slog.NewTextHandler(io.Discard, nil)), []Rule{rule}); err == nil {
+		t.Fatal("expected Prepare to reject DeviceRef captured in device_class selector")
+	}
+}

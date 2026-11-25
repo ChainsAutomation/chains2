@@ -27,10 +27,11 @@ type ruleSource struct {
 }
 
 type ruleCatalog struct {
-	mu       sync.Mutex
-	dir      string
-	revision string
-	entries  []ruleSource
+	mu        sync.Mutex
+	dir       string
+	revision  string
+	entries   []ruleSource
+	templates map[string]cachedTemplate
 }
 
 type ruleManifest struct {

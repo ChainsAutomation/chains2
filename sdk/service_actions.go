@@ -14,7 +14,8 @@ type actionContextKey struct{}
 
 func (r *Runtime) actionLoop() {
 	results := map[string]chains.Result{}
-	var order []string
+	var order [4096]string
+	orderPos := 0
 	for {
 		select {
 		case <-r.ctx.Done():
@@ -29,12 +30,12 @@ func (r *Runtime) actionLoop() {
 				var executed bool
 				result, executed = r.invoke(request)
 				if executed {
-					results[key] = result
-					order = append(order, key)
-					if len(order) > 4096 {
-						delete(results, order[0])
-						order = order[1:]
+					if evicted := order[orderPos]; evicted != "" {
+						delete(results, evicted)
 					}
+					results[key] = result
+					order[orderPos] = key
+					orderPos = (orderPos + 1) % len(order)
 				}
 			}
 			if err := r.outcome(r.ctx, request, result); err != nil && r.ctx.Err() == nil {

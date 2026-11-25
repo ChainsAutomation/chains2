@@ -83,7 +83,21 @@ func TestDashboardRolesAndPersistence(t *testing.T) {
 	call("POST", base+"/actions", origin, target, family, 400) // It has no setter.
 	call("POST", base+"/actions", origin, `{"service_id":"chains.operator","device_id":"system","attribute":"last_manual_event","value":true}`, family, 404)
 	operatorCatalog := call("GET", base+"/dashboard", "", "", op, 200).Body.String()
-	householdCatalog := call("GET", base+"/dashboard", "", "", family, 200).Body.String()
+	householdRec := call("GET", base+"/dashboard", "", "", family, 200)
+	householdCatalog := householdRec.Body.String()
+	etag := householdRec.Header().Get("ETag")
+	if etag == "" {
+		t.Fatal("expected ETag header on dashboard response")
+	}
+	req304 := httptest.NewRequest("GET", origin+base+"/dashboard", nil)
+	req304.RemoteAddr = "127.0.0.1:6543"
+	req304.AddCookie(family)
+	req304.Header.Set("If-None-Match", etag)
+	rec304 := httptest.NewRecorder()
+	handler.ServeHTTP(rec304, req304)
+	if rec304.Code != http.StatusNotModified || rec304.Body.Len() != 0 {
+		t.Fatalf("conditional GET = %d, body=%q, want 304 empty", rec304.Code, rec304.Body.String())
+	}
 	if operatorCatalog != householdCatalog || !strings.Contains(householdCatalog, "Fixture device") ||
 		strings.Contains(householdCatalog, "chains.operator") {
 		t.Fatalf("unexpected household catalog: %s", householdCatalog)

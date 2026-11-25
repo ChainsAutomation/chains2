@@ -71,11 +71,13 @@ func (e *Engine) buildRule(name string, b ruleBuilder) (string, error) {
 	return formatBuilder(name, b)
 }
 
+const maxBuilderSeconds = 9e9
+
 func formatBuilder(name string, b ruleBuilder) (string, error) {
-	if b.Timeout < 0 || b.Timeout >= float64(1<<63-1)/float64(time.Second) {
+	if math.IsNaN(b.Timeout) || math.IsInf(b.Timeout, 0) || b.Timeout < 0 || b.Timeout > maxBuilderSeconds {
 		return "", errors.New("rule timeout is outside the supported range")
 	}
-	r := rules.Rule{Name: name, Concurrency: b.Concurrency, Timeout: time.Duration(b.Timeout * float64(time.Second))}
+	r := rules.Rule{Name: name, Concurrency: b.Concurrency, Timeout: time.Duration(math.Round(b.Timeout * float64(time.Second)))}
 	opening := &rules.Expression{Kind: "call", Text: b.Trigger}
 	switch b.Trigger {
 	case "Event", "Time":
@@ -91,7 +93,7 @@ func formatBuilder(name string, b ruleBuilder) (string, error) {
 	}
 	for _, action := range b.Actions {
 		if action.Kind == "delay" {
-			if action.Seconds == nil || math.IsNaN(*action.Seconds) || *action.Seconds < 0 || *action.Seconds >= float64(math.MaxInt64)/float64(time.Second) {
+			if action.Seconds == nil || math.IsNaN(*action.Seconds) || math.IsInf(*action.Seconds, 0) || *action.Seconds < 0 || *action.Seconds > maxBuilderSeconds {
 				return "", errors.New("enter nonnegative delay seconds within the supported duration")
 			}
 			r.Body = append(r.Body, rules.Statement{Kind: "expression", Value: &rules.Expression{

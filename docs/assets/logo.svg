@@ -1,0 +1,108 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 420" width="420" height="420" role="img" aria-label="Chains Automation logo">
+  <defs>
+    <!-- Soft ambient drop shadow for the whole emblem -->
+    <filter id="emblemShadow" x="-18%" y="-14%" width="136%" height="136%">
+      <feDropShadow dx="0" dy="14" stdDeviation="14" flood-color="#121826" flood-opacity="0.22"/>
+    </filter>
+
+    <!-- Interlocking cast shadows where one link crosses in front of the other -->
+    <filter id="linkShadow" x="-25%" y="-25%" width="150%" height="150%">
+      <feGaussianBlur stdDeviation="5"/>
+    </filter>
+
+    <!-- Cool link (lower-left) gradients -->
+    <linearGradient id="gTopBack" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#3c8248"/>
+      <stop offset="100%" stop-color="#58a364"/>
+    </linearGradient>
+    <linearGradient id="gTopBevel" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#a8d8db"/>
+      <stop offset="100%" stop-color="#d4f0f0"/>
+    </linearGradient>
+    <linearGradient id="gLeftWall" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#9ad4c4"/>
+      <stop offset="55%" stop-color="#7ebfaf"/>
+      <stop offset="100%" stop-color="#69ab9b"/>
+    </linearGradient>
+    <linearGradient id="gBottom" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#b5deb8"/>
+      <stop offset="100%" stop-color="#8cc291"/>
+    </linearGradient>
+    <linearGradient id="gRightWall" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#9bd28c"/>
+      <stop offset="50%" stop-color="#7eb96f"/>
+      <stop offset="100%" stop-color="#639e56"/>
+    </linearGradient>
+
+    <!-- Warm link (upper-right) gradients -->
+    <linearGradient id="wTopBack" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#e3644b"/>
+      <stop offset="100%" stop-color="#c94633"/>
+    </linearGradient>
+    <linearGradient id="wTopBevel" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#ebd07a"/>
+      <stop offset="100%" stop-color="#f9e9a8"/>
+    </linearGradient>
+    <linearGradient id="wLeftWall" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#f0cb8c"/>
+      <stop offset="55%" stop-color="#e2b470"/>
+      <stop offset="100%" stop-color="#d29d58"/>
+    </linearGradient>
+    <linearGradient id="wBottom" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#e9b26c"/>
+      <stop offset="100%" stop-color="#d4914a"/>
+    </linearGradient>
+    <linearGradient id="wRightWall" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#f09060"/>
+      <stop offset="55%" stop-color="#e07447"/>
+      <stop offset="100%" stop-color="#cb5c34"/>
+    </linearGradient>
+
+    <!-- Clip paths for realistic interlocking occlusion shadows -->
+    <clipPath id="clipGreenTopBack">
+      <polygon points="128,121 282,121 216,187 128,187"/>
+    </clipPath>
+    <clipPath id="clipWarmBottom">
+      <polygon points="139,299 205,233 359,233 293,299"/>
+    </clipPath>
+  </defs>
+
+  <g filter="url(#emblemShadow)" stroke-linejoin="round">
+    <!-- 1. Cool link: back-top ceiling (passes behind the warm left bar) -->
+    <polygon points="128,121 282,121 216,187 128,187" fill="url(#gTopBack)" stroke="url(#gTopBack)" stroke-width="0.6"/>
+    <line x1="128" y1="121" x2="282" y2="121" stroke="#b9ebc1" stroke-opacity="0.32" stroke-width="1.4"/>
+
+    <!-- Cast shadow from warm left bar onto cool back-top ceiling -->
+    <g clip-path="url(#clipGreenTopBack)">
+      <polygon points="145,108 215,108 215,240 145,240" fill="#173820" opacity="0.34" filter="url(#linkShadow)"/>
+    </g>
+
+    <!-- 2. Warm link (upper-right): all 5 facets -->
+    <polygon points="205,42 359,42 293,108 205,108" fill="url(#wTopBack)" stroke="url(#wTopBack)" stroke-width="0.6"/>
+    <polygon points="139,299 205,233 359,233 293,299" fill="url(#wBottom)" stroke="url(#wBottom)" stroke-width="0.6"/>
+    <polygon points="139,108 205,42 205,108" fill="url(#wTopBevel)" stroke="url(#wTopBevel)" stroke-width="0.6"/>
+    <polygon points="139,108 205,108 205,233 139,299" fill="url(#wLeftWall)" stroke="url(#wLeftWall)" stroke-width="0.6"/>
+    <polygon points="293,108 359,42 359,233 293,299" fill="url(#wRightWall)" stroke="url(#wRightWall)" stroke-width="0.6"/>
+
+    <!-- Subtle inner ridge highlights on warm link -->
+    <polyline points="139,108 205,42 359,42" fill="none" stroke="#fff7df" stroke-opacity="0.45" stroke-width="1.5"/>
+    <line x1="293" y1="108" x2="359" y2="42" stroke="#ffd8bf" stroke-opacity="0.38" stroke-width="1.5"/>
+    <line x1="139" y1="108" x2="205" y2="108" stroke="#fff2cc" stroke-opacity="0.35" stroke-width="1.2"/>
+
+    <!-- Cast shadow from cool right bar onto warm bottom floor -->
+    <g clip-path="url(#clipWarmBottom)">
+      <polygon points="210,187 288,121 288,312 210,378" fill="#5e2a0c" opacity="0.30" filter="url(#linkShadow)"/>
+    </g>
+
+    <!-- 3. Cool link (lower-left): front & side facets (right wall passes in front of warm bottom) -->
+    <polygon points="62,378 128,312 282,312 216,378" fill="url(#gBottom)" stroke="url(#gBottom)" stroke-width="0.6"/>
+    <polygon points="62,187 128,121 128,187" fill="url(#gTopBevel)" stroke="url(#gTopBevel)" stroke-width="0.6"/>
+    <polygon points="62,187 128,187 128,312 62,378" fill="url(#gLeftWall)" stroke="url(#gLeftWall)" stroke-width="0.6"/>
+    <polygon points="216,187 282,121 282,312 216,378" fill="url(#gRightWall)" stroke="url(#gRightWall)" stroke-width="0.6"/>
+
+    <!-- Subtle inner ridge highlights on cool link (front/visible ridges only) -->
+    <line x1="62" y1="187" x2="128" y2="121" stroke="#e8fbfb" stroke-opacity="0.50" stroke-width="1.5"/>
+    <line x1="216" y1="187" x2="282" y2="121" stroke="#d9f7d2" stroke-opacity="0.42" stroke-width="1.5"/>
+    <line x1="62" y1="187" x2="128" y2="187" stroke="#dff7f2" stroke-opacity="0.35" stroke-width="1.2"/>
+  </g>
+</svg>

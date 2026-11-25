@@ -3,6 +3,7 @@ import importlib.util
 import unittest
 
 from chains_automation import Client, decode, encode, route
+from chains_automation.transports import STREAM_BATCH_SIZE, _merge_streams
 
 
 FIXTURES = Path(__file__).resolve().parents[2] / "testdata"
@@ -39,3 +40,12 @@ class ClientTest(unittest.TestCase):
         self.assertEqual(report["causation_id"], "a")
         self.assertEqual(result["target"], "engine")
         self.assertEqual(result["data"]["status"], "completed")
+
+    def test_redis_merge_streams_watermark(self):
+        full = [(f"100-{i}".encode(), {b"topic": b"t", b"data": b"d"}) for i in range(STREAM_BATCH_SIZE)]
+        other = [(b"100-5", {b"topic": b"t", b"data": b"o1"}), (b"200-0", {b"topic": b"t", b"data": b"o2"})]
+        merged = _merge_streams([(b"s1", full), (b"s2", other)])
+        # Watermark is 100-(STREAM_BATCH_SIZE-1), so 200-0 must be held back while 100-5 is merged in order.
+        self.assertEqual(len(merged), STREAM_BATCH_SIZE + 1)
+        self.assertNotIn(b"200-0", [ident for _, ident, _ in merged])
+        self.assertIn(b"100-5", [ident for _, ident, _ in merged])

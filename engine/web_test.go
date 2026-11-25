@@ -102,6 +102,12 @@ func TestWebConsole(t *testing.T) {
 	call(handler, "DELETE", path+"/session", "http://127.0.0.1", "", "", cookie, 204)
 	call(handler, "GET", path+"/session", "", "", "", cookie, 401)
 	call(handler, "GET", path+"/services", "", "", "secret", nil, 200)
+
+	// Verify login rate limiting kicks in after repeated failures from one client host.
+	for i := 0; i < maxLoginFailures; i++ {
+		call(handler, "POST", path+"/session", "http://127.0.0.1", `{"token":"bad"}`, "", nil, 401)
+	}
+	call(handler, "POST", path+"/session", "http://127.0.0.1", `{"token":"secret"}`, "", nil, http.StatusTooManyRequests)
 }
 
 func TestBrowserOrigin(t *testing.T) {

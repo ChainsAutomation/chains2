@@ -50,6 +50,8 @@ docker compose --env-file deploy/.env -f deploy/compose.yaml -f deploy/compose.r
 
 The authority, fan, and sensor publish Chains messages to Redis. The sensor still listens for raw humidity readings on Mosquitto. Redis has its own named data volume. Use different Compose project names and host ports to run both examples side by side.
 
+The Redis adapter targets a standalone Redis server, writes each message to both a combined stream (`<namespace>:all`) and a per-type stream (`<namespace>:type:<type>`) with a bounded diagnostic history, and lets each subscriber track its own read cursor independently. Any Redis client with stream write permission is a trusted participant in the deployment; use a private broker and `rediss://` for remote links.
+
 ## Run your integrations
 
 For a Python service, run the image with arguments such as `rflink -f /etc/chains/services/rflink.toml` or `radicale -f /etc/chains/services/home-dav.toml`, and mount the corresponding configuration. Set `CHAINS_BUS` to the broker address reachable inside the container. Mount persistent storage under `/var/lib/chains` for Radicale checkpoints. For RFLink or a USB keyboard, pass the single serial or input device with Docker's `--device` option and grant the container's user access to it. See the [Python services guide](services-python.md) and [Go SDK guide](sdk-go.md) for configuration.

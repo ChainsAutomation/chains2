@@ -14,11 +14,20 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
 	chains "chains-automation"
 	"chains-automation/rules"
 	"github.com/pelletier/go-toml/v2"
 )
+
+type cachedTemplate struct {
+	bundled bool
+	modTime time.Time
+	size    int64
+	parsed  ruleTemplate
+	raw     []byte
+}
 
 //go:embed templates/*.toml
 var bundledTemplates embed.FS
@@ -182,10 +191,32 @@ func (c *ruleCatalog) readTemplate(id string) (ruleTemplate, []byte, error) {
 		return ruleTemplate{}, nil, fs.ErrNotExist
 	}
 	path := "templates/" + id + ".toml"
+	c.mu.Lock()
+	cached, hit := c.templates[id]
+	c.mu.Unlock()
+	if hit && cached.bundled {
+		return cached.parsed, bytes.Clone(cached.raw), nil
+	}
 	raw, err := bundledTemplates.ReadFile(path)
 	bundled := err == nil
+	var modTime time.Time
+	var size int64
 	if errors.Is(err, fs.ErrNotExist) && c.dir != "" {
-		raw, err = os.ReadFile(filepath.Join(c.dir, path))
+		full := filepath.Join(c.dir, path)
+		info, statErr := os.Stat(full)
+		if statErr != nil {
+			if hit {
+				c.mu.Lock()
+				delete(c.templates, id)
+				c.mu.Unlock()
+			}
+			return ruleTemplate{}, nil, statErr
+		}
+		modTime, size = info.ModTime(), info.Size()
+		if hit && !cached.bundled && cached.modTime.Equal(modTime) && cached.size == size {
+			return cached.parsed, bytes.Clone(cached.raw), nil
+		}
+		raw, err = os.ReadFile(full)
 	}
 	if err != nil {
 		return ruleTemplate{}, nil, err
@@ -194,6 +225,14 @@ func (c *ruleCatalog) readTemplate(id string) (ruleTemplate, []byte, error) {
 	t.Bundled = bundled
 	if err == nil && t.ID != id {
 		err = errors.New("template ID differs from filename")
+	}
+	if err == nil {
+		c.mu.Lock()
+		if c.templates == nil {
+			c.templates = map[string]cachedTemplate{}
+		}
+		c.templates[id] = cachedTemplate{bundled: bundled, modTime: modTime, size: size, parsed: t, raw: bytes.Clone(raw)}
+		c.mu.Unlock()
 	}
 	return t, raw, err
 }

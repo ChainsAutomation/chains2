@@ -86,4 +86,61 @@ for item in config.value:
 	if err != nil || second != canonical {
 		t.Fatalf("format is unstable: %q, %v", second, err)
 	}
+	if !strings.Contains(canonical, "elseif event.data.count > 1:") {
+		t.Fatalf("Format did not preserve elseif cleanly:\n%s", canonical)
+	}
+}
+
+func TestScopingAndNewSyntaxValidation(t *testing.T) {
+	valid := `
+rule.mode = "restart"
+rule.timeout = 60
+
+ev = Event(type="sensor.sample")
+if not Has(ev.data, "value"):
+    return
+else:
+    reading = ev.data.value
+switch reading:
+    case 1:
+        label = "one"
+    default:
+        label = "other"
+if "o" in label and "z" not in label and Len(label) > 0:
+    devs = Devices(device_class=light, tag=guest)
+    if Len(devs) == 0:
+        next = Event(type="followup", timeout=5)
+        if next == null:
+            Action("noop", device=ev.device, value=Min(Max(Round(Abs(-1.6)), 1), 10))
+`
+	rule, err := Parse("scoping", valid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	formatted, err := Format(rule)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(formatted, `rule.mode = "restart"`) {
+		t.Fatalf("missing rule.mode in formatted output:\n%s", formatted)
+	}
+	reparsed, err := Parse("scoping", formatted)
+	if err != nil {
+		t.Fatalf("reparse failed: %v\n%s", err, formatted)
+	}
+	again, err := Format(reparsed)
+	if err != nil || again != formatted {
+		t.Fatalf("format unstable:\n%s\n---\n%s", formatted, again)
+	}
+
+	for _, bad := range []string{
+		"rule.mode = \"invalid\"\nEvent()\n",
+		"rule.mode = \"restart\"\nrule.concurrency = 2\nEvent()\n",
+		"Event(type=\"a\", timeout=5)\n",
+		"x = Now()\nEvent()\n",
+	} {
+		if _, err := Parse("bad", bad); err == nil {
+			t.Errorf("expected error for %q", bad)
+		}
+	}
 }

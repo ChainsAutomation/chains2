@@ -1,17 +1,98 @@
-# Chains Automation
+<p align="center">
+  <img src="docs/assets/logo.svg" alt="Chains Automation" width="160" height="160" />
+</p>
 
-Chains runs automation rules over a single MQTT 5 or Redis Streams bus. A Go engine accepts events, maintains a revisioned view of reported state, and sends actions to registered integrations. Each deployment has one state authority and can run additional engines with their own rules and subscriptions.
+<h1 align="center">Chains Automation</h1>
 
-## Install and run
+<p align="center">
+  <strong>Fast, local-first home automation with a readable rules language, coherent device state, and clean web apps.</strong>
+</p>
 
-- [Native installation](docs/getting-started.md#native-installation) installs the CLI and optionally the engine and bundled Go services.
-- [Local development](docs/getting-started.md) starts the native demo, builds the UI, and verifies the humidity rule.
-- [Docker and Compose](docs/docker-compose.md) covers both images and MQTT and Redis examples.
-- [Kubernetes](docs/kubernetes.md) covers Kustomize, persistent state, separate Pods, and node-attached integrations.
+<p align="center">
+  <a href="#try-it-in-two-minutes">Quickstart</a> ·
+  <a href="docs/rules.md">Rules Guide</a> ·
+  <a href="docs/household-dashboards.md">Household App</a> ·
+  <a href="docs/operator-web.md">Operator Console</a> ·
+  <a href="docs/getting-started.md">Install</a> ·
+  <a href="#documentation">Docs</a>
+</p>
 
-## Run the humidity example
+---
 
-Build on Linux with Go 1.23+, a C compiler, pkg-config, and the development headers for SQLite and libmosquitto. Start a local MQTT 5 broker, then run the engine, simulated fan, and sensor adapter in separate terminals.
+Chains connects your devices, sensors, and services over **MQTT 5** or **Redis Streams**. A lightweight Go engine commits every observation to a revisioned **SQLite** state store before rules see it, runs automations written in a clean Python-like `.chains` DSL, and serves both a **Household app** for everyday control and an **Operator console** for rules, devices, and live trace debugging.
+
+## Why Chains?
+
+| Feature | What it gives you |
+| --- | --- |
+| **Readable, stateful rules** | Write automations in indentation-based `.chains` files—or use the guided web editor and [rule templates](docs/rule-templates.md). Support for retriggerable timers (`rule.mode = "restart"`), bounded follow-up waits (`Event(..., timeout=...)`), `Sleep()`, calendar schedules, loops, and live publishing without restarts. |
+| **No event/state race conditions** | Every observation commits device attributes atomically in SQLite *before* dispatching rules. Repeated readings (like button presses) still trigger rules, while leaf value changes emit `state.changed` notifications automatically. |
+| **Two purpose-built web apps + TUI** | A dedicated **Household app** (`/`) with custom dashboards and auto-generated device controls, an **Operator console** (`/ui/`) with live **Watch**, **Trace Explorer**, and rule management, plus the keyboard-driven `chainsctl` terminal UI. |
+| **Schema-first devices & placement** | Built-in classes (`toggle`, `light`, `dimmer`, `motion`), typed setters, hierarchical locations (`House.Bedroom.**`), and tags keep rules and dashboards decoupled from vendor quirks. |
+| **Built-in Zigbee2MQTT & integrations** | First-class co-hosted Zigbee2MQTT bridge, Onkyo receivers, USB keyboards, RFLink, Frigate, Tibber Pulse, Radicale calendars, and ntfy notifications—plus ergonomic **Go** and **Python** SDKs. |
+| **Single binary or distributed workers** | Run everything on one box, or scale out with narrowly subscribed worker engines that stay synchronized with the authority's state revisions. |
+
+---
+
+## Automations at a glance
+
+Rules read like plain workflows—no nested YAML templates required.
+
+**Retriggerable motion light** — turns on on motion, resets the timer on every new detection, and turns off cleanly after occupancy clears:
+
+```text
+rule.mode = "restart"
+rule.timeout = 900
+
+sensor = Device(service_id="zigbee2mqtt", device_id="0x00158d0001a2b3c4")
+lamp   = Device(service_name=Zigbee2MQTT, device_name="hall/light")
+
+Event(type="state.changed", device=sensor, attribute="occupancy", value=true, initial=false)
+Set(device=lamp, attribute="power", value=true)
+
+cleared = Event(type="state.changed", device=sensor, attribute="occupancy", value=false, timeout=600)
+if cleared != null:
+    Sleep(120)
+Set(device=lamp, attribute="power", value=false)
+```
+
+**Bathroom humidity fan** — acts only when humidity crosses a threshold and the fan isn't already running:
+
+```text
+reading = Event(type="humidity.reported", device_id="bathroom-sensor")
+fan = Device(service_id="sim-fan", device_id="fan")
+if reading.data.value >= 70 and State(fan).power == false:
+    Action("set_power", device=fan, value=true)
+```
+
+Read the **[Comprehensive Rules Guide](docs/rules.md)** for full language reference, calendar schedules, batch matching, built-in functions, and a cookbook of real-world patterns.
+
+---
+
+## Try it in two minutes
+
+### Local interactive demo
+
+On Linux with Go 1.23+, Node.js 22.12+, Mosquitto, and the `sqlite3` / `libmosquitto` dev headers ([prerequisites](docs/getting-started.md#prerequisites)):
+
+```sh
+./scripts/dev.sh
+```
+
+This starts Mosquitto, the Chains authority, a simulated bathroom fan, a humidity sensor, and both web apps (`http://127.0.0.1:8080/` and `http://127.0.0.1:8080/ui/`). In a second terminal, trigger the humidity rule and verify the fan turns on:
+
+```sh
+./scripts/dev.sh smoke
+```
+
+### Other ways to run
+
+- **Native install** — install `chainsctl`, `chains`, and `chains-go-service` into `~/.local/bin`: see [Local development and installation](docs/getting-started.md#native-installation).
+- **Docker Compose** — ready-to-run MQTT and Redis stacks: see [Docker and Compose](docs/docker-compose.md).
+- **Kubernetes** — Kustomize manifests with persistent state and node-attached integrations: see [Kubernetes](docs/kubernetes.md).
+
+<details>
+<summary>Run the humidity example manually without the dev launcher</summary>
 
 ```sh
 go build -buildvcs=false -o chains ./cmd/chains
@@ -21,74 +102,83 @@ go build -buildvcs=false -o chains ./cmd/chains
 mosquitto_pub -q 1 -t sensors/bathroom/humidity -m 72.5
 ```
 
-A reading of at least 70 turns the simulated fan on if its reported power is off. The sensor adapter writes humidity to State in the same observation that triggers the rule. It accepts raw numbers by default. A retained MQTT reading seeds reported state without emitting a live reading event. To map another device, set `sensor_topic` and the config file's `sensor` object. The object can override `device`, `event`, `attribute`, `field`, `format`, and `schema`. Supported input formats are `number`, `boolean` (including `ON`/`OFF`), `string`, and `json`. Supply a matching JSON Schema when changing the event payload.
+For Redis Streams, add `-bus redis://localhost:6379` to the engine, fan, and sensor commands, and pass `-sensor-broker mqtt://localhost:1883` to the sensor adapter for its raw MQTT device feed. See [generic MQTT sensor adapter](docs/getting-started.md#generic-mqtt-sensor-adapter) to customize topics, formats, and schemas.
 
-For Redis, add `-bus redis://localhost:6379` to the engine, fan, and sensor commands. Also pass `-sensor-broker mqtt://localhost:1883` to the sensor adapter for its device input. Redis is the system bus in this deployment, while MQTT carries the raw sensor feed. The Redis adapter uses a standalone Redis server, one stream for all messages and one stream per message type, and a bounded diagnostic history. Each subscriber follows new messages independently.
+</details>
 
-## Operator console
+---
 
-Run `./scripts/install.sh` to install `chainsctl` and inspect state, describe service capabilities, watch live events and rule runs, or send manual events. The terminal UI offers State, Watch, and Send in a keyboard-driven view. The [operator guide](docs/operator-cli.md) covers authority setup, table, JSON and CSV output, filters, and event profiles. The [web console guide](docs/operator-web.md) covers the bundled browser UI and its Trace Explorer. The [household dashboard guide](docs/household-dashboards.md) covers the standalone household app at `/`, dashboard builder, and device controls. The [Devices guide](docs/devices.md) covers generated controls, location patterns, and tags.
+## How Chains fits together
 
-## Rules
+```mermaid
+flowchart LR
+    subgraph Integrations
+        Z2M["Zigbee2MQTT Bridge"]
+        Py["Python Services<br/>Frigate · RFLink · Tibber<br/>Radicale · ntfy"]
+        GoSvc["Go Services<br/>Onkyo · Keyboard · Custom"]
+        HTTP["HTTP Ingress"]
+    end
 
-A rule is one indentation-based `.chains` file. Pass a file or a directory containing rule files to `-rules`. Each filename supplies the rule's name.
+    Bus["Event Bus<br/>MQTT 5 or Redis Streams"]
 
-See [events and State](docs/events.md) for the observation structure, batching, and delivery guarantees. See [rules engine concurrency and latency](docs/rules-engine-concurrency.md) for event routing, run limits, CPU contention, and multi-process deployment.
+    subgraph Authority["Authority Engine"]
+        SQLite["SQLite State Store<br/>Revisioned & Atomic"]
+        Rules["Rules Runtime<br/>File & Web Rules"]
+        Web["Household App (/)<br/>Operator Console (/ui/)"]
+    end
 
-```text
-led = Device(service_name=LEDPanel, device_name=panel0)
+    Worker["Optional Worker Engines<br/>Narrowly Subscribed"]
+    CLI["chainsctl CLI / TUI"]
 
-Event(device_class=light)
-Action("writestring", device=led, value="Light is modified")
+    Z2M -->|Local fast path| Authority
+    Py & GoSvc <--> Bus
+    HTTP --> Authority
+    Bus <--> Authority
+    Bus <--> Worker
+    CLI <--> Web
 ```
 
-```text
-rule.concurrency = 3
-rule.timeout = 60
+- **One State Authority** validates registrations and observations, commits State revisions atomically in SQLite, dispatches local rules, and publishes updates onto the bus.
+- **Optional Worker Engines** replicate a read view from the authority, recover from snapshots on reconnect, and can subscribe to only the event types their rules care about (`-types`).
+- **Two Web Apps + CLI**:
+  - **Household app (`/`)** — customizable [dashboards](docs/household-dashboards.md) and generated device controls for everyone at home.
+  - **Operator console (`/ui/`)** — [State, Devices, Rules, Templates, Watch, and Trace Explorer](docs/operator-web.md).
+  - **`chainsctl`** — [CLI and keyboard-driven TUI](docs/operator-cli.md) for inspecting state, watching live activity, and sending manual events.
 
-led = Device(service_name=LEDPanel, device_name=panel0)
-ev = Event(action=power_toggle)
-if State(ev.device).power == false:
-    Action("writestring", device=led, value="Light is off!")
-else:
-    Action("writestring", device=led, value="Light is on!")
+---
+
+## Integrations & SDKs
+
+| Integration / SDK | Highlights | Guide |
+| --- | --- | --- |
+| **Zigbee2MQTT** | Co-hosted bridge on the authority with auto-discovery, retained state seeding, button actions, power, percentage `dimlevel`, and `motion` occupancy. | [Zigbee2MQTT guide](docs/zigbee2mqtt.md) |
+| **Onkyo Receivers** | Local eISCP control for multi-zone power, volume, mute, and input selection. | [Onkyo guide](docs/onkyo.md) |
+| **Bundled Python Services** | RFLink (433 MHz), Frigate (camera AI), Tibber Pulse (energy), Radicale (CalDAV), and ntfy (push notifications). | [Python services](docs/services-python.md) · [Radicale](docs/radicale.md) |
+| **Bundled Go Services** | Managed Go runtime and USB `evdev` keyboard service. | [Go SDK guide](docs/sdk-go.md) |
+| **Build your own** | Write custom integrations in Go (`sdk`) or Python (`chains-service MODULE:CLASS`) with automatic JSON Schema validation, heartbeats, and state sync. | [Go SDK](docs/sdk-go.md) · [Python SDK](docs/sdk-python.md) |
+
+---
+
+## Zigbee2MQTT bridge
+
+Enable the built-in bridge on the state-authority engine:
+
+```sh
+CHAINS_Z2M_ENABLED=true \
+CHAINS_Z2M_MQTT_URL=mqtt://localhost:1883 \
+  ./chains engine -rules examples/z2m/button-to-light.chains
 ```
 
-- `Event()` matches envelope fields, device selectors, State attributes and values, or event payload fields. Each rule trigger or pending wait gets one match per observation, even if several devices match. `ev.matches` contains the matching device patches and `ev.observations` contains the full batch. A patch has `device`, `device_id`, `values`, and `data`. If exactly one patch matches, `ev.device` and `ev.data` are shortcuts.
-- `Device(service_name=..., device_name=...)` and name-based actions require a unique device. `Devices(service_name=..., device_name=...)` returns every match in ID order, including an empty list if none match. The plural selector can combine any of `service_id`, `service_name`, `device_id`, and `device_name`. The singular selector also takes an ID pair. `State(device)` reads the latest State. Use the event's `values` for the exact observation that triggered the rule.
-- `Event(type="state.changed")` matches a changed leaf and exposes `attribute`, `previous`, `value`, `initial`, and `revision` under `ev.data`. Untyped `Event()` skips these derived notifications. An equal reading still triggers its ordinary event and refreshes `observed_at`, while `changed_at` keeps the last value-change time.
-- An opening `Event()`, `Every()`, or `Time()` starts a run after optional pure local assignments. A device alias declared there can also scope the trigger with `Event(device=alias)`. Further waits suspend the current run. `rule.concurrency` defaults to one. `rule.timeout` defaults to 300 seconds and starts at the opening match. The same deadline applies through later waits, actions, and computation. A run ends on expiry, `return`, or the end of the file.
-- Read the latest reported attribute with `State(ev.device).power`. A missing attribute evaluates to `null`. Use `ev.data.power` for the value carried by the event itself. Read attribute timestamps under `State(ev.device)._attributes.power`. Both state values and event fields can be used directly in action arguments.
-- Use `Action("set_power", device=ev.device, value=false)` for a known device, or supply a unique `service_name` and `device_name` pair. `Device(service_id="sim-fan", device_id=fan)` builds a reference from stable IDs. `Device()` also accepts the name pair. Unbound bare words such as `fan` are string shorthand in selectors and named target fields. Quote literal names containing spaces or punctuation. Other value expressions use explicit literals or declared variables.
-- Action arguments are validated against the registered schema. Use `schema_version="2"` to select a schema version. The default is `"1"`. Outcome mode returns `completed`, `submitted`, `failed`, or `timed_out`. Use `wait="sent"` to continue after sending the request. The engine traces `accepted` separately. Declared idempotent actions may retry while awaiting acceptance. A late device observation can still update state.
-- Use `#` for comments. The language supports single- and double-quoted strings, lists, objects, arithmetic, comparisons, `if`/`elseif`/`else`, `switch`/`case`/`default`, `while`, and `for item in items`. Use `Has(object, key)` to check whether a field exists.
-- `Sleep(2)` pauses the current run for two seconds, within its existing deadline. Fractional seconds are supported.
-- `Every("1s")` uses elapsed time. `Time(month=12, day=25, hour=0, minute=0)` matches local Christmas midnight. Calendar selectors support year, month, week, day, weekday (Sunday is 0), hour, minute, and second. Seconds default to zero, an hour by itself defaults to minute zero, and a date without clock fields uses midnight. Nonexistent local times are skipped and repeated local times fire once.
+Retained reports seed State silently, button actions arrive under `data.action`, and lights/dimmers expose standardized `power` and percentage `dimlevel` setters. See the **[Zigbee2MQTT guide](docs/zigbee2mqtt.md)** for full configuration options, TLS/ACL setup, and mirroring behavior.
 
-A batch can update several devices with the same display name. This rule checks each matching device's exact reported volume.
-
-```text
-ev = Event(service_name=Amplifier, device_name=Main, attribute=volume)
-for match in ev.matches:
-    if match.values.volume > 30:
-        Action("set_volume", device=match.device, volume=30)
-```
-
-Use [rule templates](docs/rule-templates.md) to create an editable draft from devices and attributes in your installation. See [device controls and actions](docs/actions.md) for typed attributes, setters, and action wait modes.
-
-The Go `rules` package exposes the structured rule model and `Parse`, `Validate`, and `Format` for tools that generate rules.
-
-[Architecture decision on State-backed observations and leaf changes](docs/adr/0001-state-backed-observations.md) · [Architecture decision on web-managed rules](docs/adr/0002-web-managed-rules.md) · [Architecture decision on classes and setters](docs/adr/0003-device-classes-and-setters.md) · [Architecture decision on device placement](docs/adr/0004-device-placement.md)
-
-Use **Rules** in the web console to create automations, validate DSL, publish changes live, and transfer rules by file. [Rules console](docs/operator-web.md#rules)
+---
 
 ## Configure and extend
 
-Configuration precedence is environment, explicit CLI flags, JSON config files, then defaults. Use `CHAINS_CONFIG` or `-config` to select a file. Otherwise the engine reads `chains/config.json` under the XDG config directories. The default rules file is `$XDG_CONFIG_HOME/chains/rules.chains` and the SQLite database is `$XDG_STATE_HOME/chains/state.sqlite`. Run `./chains engine -help` for scalar settings and matching `CHAINS_*` environment names. Set `-scheduler=false` to disable time triggers, or configure `timezone` and `week` (`system`, `iso`, or `sunday`).
+Configuration precedence is **environment → explicit CLI flags → JSON config file → defaults**. Set `CHAINS_CONFIG` or `-config`, or place `chains/config.json` under your XDG config directory. Default rules live at `$XDG_CONFIG_HOME/chains/rules.chains` and SQLite state at `$XDG_STATE_HOME/chains/state.sqlite`. Run `./chains engine -help` for all flags and `CHAINS_*` variables (`-scheduler=false`, `timezone`, `week` = `system` / `iso` / `sunday`).
 
-Use one node whose `id` equals the deployment's `authority` ID. Other engines set a distinct `id` and the same `authority`, and can set `types` to a list of event types. Place each action-producing rule on a single engine. Workers restore their read view from the authority and resynchronize on gaps and reconnects. Rule runs and missed triggers are live-only, so an interruption can skip a trigger even if the state update itself was persisted. Keep the SQLite files on persistent storage and arrange manual recovery if the authority host fails.
-
-To enable HTTP ingress, set `listen`, a bearer token (for example `CHAINS_TOKEN` or [`token_command`](docs/operator-cli.md#configure-the-authority)), and an `http` mapping in the engine's JSON config:
+- **Authority & workers:** Run one node with `id == authority`. Additional worker engines set a distinct `id`, the same `authority`, and optional `types` filters; workers restore their read view from the authority and resynchronize on gaps and reconnects. Place each action-producing rule on a single engine. Rule runs and missed triggers are live-only, so an interruption can skip a trigger even when the state update is persisted. Keep SQLite and `web_rules_dir` on persistent storage and arrange manual recovery if the authority host fails.
+- **HTTP ingress:** Set `listen`, a bearer token (`CHAINS_TOKEN` or [`token_command`](docs/operator-cli.md#configure-the-authority)), and an `http` mapping in `config.json`:
 
 ```json
 {
@@ -106,50 +196,49 @@ To enable HTTP ingress, set `listen`, a bearer token (for example `CHAINS_TOKEN`
 }
 ```
 
-With that source registered, a POST to `/events/humidity` bearing the token and a body of `72.5` submits an observation. `attribute` names the event payload field. `state_attribute` names the registered State attribute and defaults to `attribute`. Use a TLS proxy for remote HTTP ingress. MQTT brokers should restrict publish/subscribe access by namespace and service identity. Redis clients with stream write permission are trusted participants in the deployment. Use a private broker and TLS URLs (`mqtts://`, `rediss://`) for remote links.
+With that source registered, `POST /events/humidity` bearing the token and a body of `72.5` submits a validated observation (`attribute` names the event payload field; `state_attribute` names the registered State attribute and defaults to `attribute`). Use a TLS reverse proxy for remote HTTP ingress, restrict MQTT broker ACLs by namespace and service identity, treat Redis clients with stream write permission as trusted participants, and use a private broker with `mqtts://` or `rediss://` for remote links.
 
-Go integrations use the `sdk` package with a `bus.Bus`. Python integrations can run `uv sync --project python --locked` and import `chains_automation`. Both SDKs support registration, atomic single- and multi-device observations, silent State seeding, and actions. An observation updates State at `service_id/device_id/attribute` before rules see it. One batch belongs to one service and one event type, with one State revision for all its devices. The wire protocol is version 3. Upgrade engines and publishers together. SQLite keeps values at existing registered IDs. Frigate starts its camera paths from new observations. Radicale discards any queued envelopes from the previous wire version. Register stable service UUIDs and schema versions. Use JSON for readable messages or CBOR for compact structured data. The transport and codec boundaries are independent of the DSL and SQLite.
+- **Wire protocol & SDKs:** Version 3 (JSON or CBOR). Register stable service UUIDs and schema versions; both the [Go SDK](docs/sdk-go.md) and [Python SDK](docs/sdk-python.md) (`uv sync --project python --locked`) support atomic observations, silent State seeding, and actions. Upgrade engines and publishers together—see [wire v3 upgrade notes](docs/actions.md#upgrading-from-wire-v2). Both transport and codec boundaries are independent of the DSL and SQLite.
+
+---
+
+## Documentation
+
+### Guides
+- **[Writing Rules (DSL & Cookbook)](docs/rules.md)** — complete language guide, triggers, timers, built-ins, and real-world examples
+- **[Rule Templates](docs/rule-templates.md)** — reusable TOML templates for the web console
+- **[Events and State](docs/events.md)** — observations, atomic batches, leaf changes, and delivery guarantees
+- **[Device Controls and Actions](docs/actions.md)** — device classes, schemas, setters, and action wait modes
+- **[Device Locations and Tags](docs/devices.md)** — hierarchical placement patterns and catalog overrides
+- **[Household Dashboards](docs/household-dashboards.md)** — home dashboards, builder, and household access
+- **[Operator Web Console](docs/operator-web.md)** & **[Operator CLI / TUI](docs/operator-cli.md)** — live Watch, Trace Explorer, and `chainsctl`
+- **[Rules Engine Concurrency & Latency](docs/rules-engine-concurrency.md)** — routing, locks, scaling across workers, and benchmarks
+- **[Local Dev & Install](docs/getting-started.md)** · **[Docker Compose](docs/docker-compose.md)** · **[Kubernetes](docs/kubernetes.md)**
+- **[Zigbee2MQTT](docs/zigbee2mqtt.md)** · **[Go SDK](docs/sdk-go.md)** · **[Python SDK](docs/sdk-python.md)** · **[Bundled Python Services](docs/services-python.md)** · **[Onkyo](docs/onkyo.md)** · **[Radicale](docs/radicale.md)**
+
+### Architecture Decision Records
+[0001 State-backed observations](docs/adr/0001-state-backed-observations.md) ·
+[0002 Web-managed rules](docs/adr/0002-web-managed-rules.md) ·
+[0003 Device classes & setters](docs/adr/0003-device-classes-and-setters.md) ·
+[0004 Device placement](docs/adr/0004-device-placement.md) ·
+[0005 Household dashboards](docs/adr/0005-household-dashboards.md) ·
+[0006 Separate web apps](docs/adr/0006-separate-web-apps.md) ·
+[0007 Household device access](docs/adr/0007-household-device-access.md) ·
+[0008 Household dashboard editing](docs/adr/0008-household-dashboard-editing.md) ·
+[0009 Declared operator State](docs/adr/0009-declared-operator-state.md) ·
+[0010 Configured token sources](docs/adr/0010-configured-token-sources.md) ·
+[0011 Rule template binding](docs/adr/0011-rule-template-binding.md) ·
+[0012 DSL extensions & performance](docs/adr/0012-rules-engine-dsl-and-performance.md)
+
+---
 
 ## Verification
 
 ```sh
-go test ./...
+go test -race ./...
 uv run --project python --locked python -m unittest discover -s python/tests
 CHAINS_TEST_MQTT=mqtt://127.0.0.1:1883 CHAINS_TEST_REDIS=redis://127.0.0.1:6379 \
   go test ./engine -run TestAutomation -bench BenchmarkSensorToAction -benchtime=256x
 ```
 
-The broker-backed tests exercise a narrowly subscribed worker, registration, observed-state updates, causal action reports, and authority restart. The benchmark reports p50 and p99 from publishing a structured sensor event to receiving the action request, in bursts of 32, along with the peak sampled backlog in the worker’s delivery queue.
-
-## Zigbee2MQTT bridge
-
-Enable the bridge on the state-authority engine. The MQTT URL connects to Zigbee2MQTT's broker and can point to a different broker from the Chains bus.
-
-```sh
-CHAINS_Z2M_ENABLED=true \
-CHAINS_Z2M_MQTT_URL=mqtt://localhost:1883 \
-  ./chains engine -rules examples/z2m/button-to-light.chains
-```
-
-Replace the sample IEEE address and light name in the rule with values from your Zigbee2MQTT inventory. Each setting can also be set under `z2m` in the JSON config or via its flag.
-
-| JSON key | Flag | Environment | Default |
-|---|---|---|---|
-| `enabled` | `-z2m-enabled` | `CHAINS_Z2M_ENABLED` | `false` |
-| `mqtt_url` | `-z2m-mqtt-url` | `CHAINS_Z2M_MQTT_URL` | Required when enabled |
-| `base_topic` | `-z2m-base-topic` | `CHAINS_Z2M_BASE_TOPIC` | `zigbee2mqtt` |
-| `service_id` | `-z2m-service-id` | `CHAINS_Z2M_SERVICE_ID` | `zigbee2mqtt` |
-| `service_name` | `-z2m-service-name` | `CHAINS_Z2M_SERVICE_NAME` | `Zigbee2MQTT` |
-| `ca_file` | `-z2m-ca-file` | `CHAINS_Z2M_CA_FILE` | System trust store |
-
-Use `mqtts://` for TLS and include percent-encoded credentials in the URL if required. Give the bridge permission to subscribe to its configured base topic and publish device commands below it. Keep Zigbee2MQTT configured to publish JSON reports.
-
-Retained device reports seed state without starting rules. Live button actions carry the original action name under `data.action`. Power and percentage `dimlevel` are available on devices that advertise the corresponding setters. A `submitted` action result means the MQTT broker acknowledged a command. A later device report supplies the observed state. The authority dispatches local rules directly and mirrors events onto the Chains bus. Remote subscribers can miss live events if the publication queue overflows or the system bus is unavailable.
-
-## Author a Python service
-
-Start a service with `chains-service MODULE:CLASS`. The [Python SDK reference](docs/sdk-python.md) covers configuration, lifecycle hooks, events, actions, state, and runnable examples. See [bundled services](docs/services-python.md) for RFLink, Frigate, ntfy, Radicale, and Tibber Pulse.
-
-## Author a Go service
-
-The [Go SDK guide](docs/sdk-go.md) covers the managed runtime, configuration, and the bundled USB keyboard service. See the [Onkyo receiver guide](docs/onkyo.md) for local receiver control.
+The broker-backed tests exercise a narrowly subscribed worker, registration, observed-state updates, causal action reports, and authority restart. The benchmark reports p50 and p99 latency from publishing a structured sensor event to receiving the action request (in bursts of 32), along with the peak sampled backlog in the worker's delivery queue.
