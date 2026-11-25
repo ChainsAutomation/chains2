@@ -105,3 +105,27 @@ func TestOperatorRulesLifecycle(t *testing.T) {
 		t.Fatal("oversized import accepted")
 	}
 }
+
+func TestRuleBuilderModeAndScopeRoundTrip(t *testing.T) {
+	b := ruleBuilder{
+		Trigger:   "Event",
+		Mode:      "restart",
+		Scope:     "device",
+		Timeout:   60,
+		Selectors: map[string]any{"type": "motion"},
+		Actions: []ruleBuilderAction{
+			{Service: "z2m", Device: "lamp", Attribute: "power", Args: map[string]any{"value": true}},
+		},
+	}
+	source, err := formatBuilder("motion", b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(source, `rule.mode = "restart"`) || !strings.Contains(source, `rule.scope = "device"`) {
+		t.Fatalf("missing mode/scope in generated source:\n%s", source)
+	}
+	recognized := recognizeBuilder(ruleSource{Name: "motion", Source: source})
+	if recognized == nil || recognized.Mode != "restart" || recognized.Scope != "device" {
+		t.Fatalf("recognizeBuilder failed to round-trip mode/scope: %+v", recognized)
+	}
+}

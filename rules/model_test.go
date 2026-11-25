@@ -144,3 +144,63 @@ if "o" in label and "z" not in label and Len(label) > 0:
 		}
 	}
 }
+
+func TestSelectGuardsScopeAndDurationSyntax(t *testing.T) {
+	source := `
+rule.mode = "restart"
+rule.scope = "device"
+rule.timeout = "15m"
+
+lamp = Device(service_id="z2m", device_id="lamp")
+min_age = Duration("30m")
+
+select:
+    case ev = Event(type="motion") when ev.data.active == true and State(lamp).power == false and LocalTime().hour >= 0:
+        tag = "motion"
+    case Time(hour=23, minute=30):
+        Set(device=lamp, attribute="power", value=false)
+        return
+
+if tag == "motion" and min_age == 1800:
+    select:
+        case next = Event(type="clear") when next.data.done == true:
+            Sleep("100ms")
+            Set(device=lamp, attribute="power", value=false)
+        case Sleep("10m"):
+            Set(device=lamp, attribute="power", value=false)
+`
+	rule, err := Parse("select_test", source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	formatted, err := Format(rule)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(formatted, `rule.scope = "device"`) || !strings.Contains(formatted, "select:") || !strings.Contains(formatted, " when ") {
+		t.Fatalf("unexpected formatted output:\n%s", formatted)
+	}
+	reparsed, err := Parse("select_test", formatted)
+	if err != nil {
+		t.Fatalf("reparse failed: %v\n%s", err, formatted)
+	}
+	again, err := Format(reparsed)
+	if err != nil || again != formatted {
+		t.Fatalf("format unstable:\n%s\n---\n%s", formatted, again)
+	}
+
+	for _, bad := range []string{
+		"rule.scope = \"room\"\nEvent()\n",
+		"rule.timeout = \"bogus\"\nEvent()\n",
+		"select:\n    case Sleep(1):\n        return\n",
+		"Event(type=\"a\") when Action(\"x\", device=Device(service_id=a, device_id=b)) == null\n",
+		"Time(hour=1) when true\n",
+		"Event(type=\"a\")\nx = 1 when true\n",
+		"Event(type=\"a\")\nselect:\n    case Event(type=\"b\", timeout=5):\n        return\n",
+		"Event(type=\"a\")\nselect:\n    case x = Sleep(1):\n        return\n",
+	} {
+		if _, err := Parse("bad", bad); err == nil {
+			t.Errorf("expected error for %q", bad)
+		}
+	}
+}

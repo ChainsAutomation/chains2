@@ -53,31 +53,69 @@ type Runtime struct {
 	mu       sync.Mutex
 	wg       sync.WaitGroup
 	closed   bool
-	active   map[string]*opening
+	active   map[string]*ruleGroup
 	openings map[string][]*opening
 	waits    map[string]map[*wait]bool
 }
 
+type ruleGroup struct {
+	rule    Rule
+	ctx     context.Context
+	cancel  context.CancelFunc
+	initial map[string]any
+	tail    []Statement
+	arms    []*opening
+	runs    map[string]map[*execution]context.CancelFunc
+	running int
+}
+
+func (g *ruleGroup) syncRunning() {
+	total := 0
+	for _, bucket := range g.runs {
+		total += len(bucket)
+	}
+	g.running = total
+	for _, arm := range g.arms {
+		arm.running = total
+	}
+}
+
 type opening struct {
+	group     *ruleGroup
+	index     int
 	placement chains.PlacementFilter
-	ctx       context.Context
-	cancel    context.CancelFunc
-	rule      Rule
 	pattern   map[string]any
 	running   int
-	runs      map[*execution]context.CancelFunc
-	initial   map[string]any
 	binding   string
-	body      []Statement
+	guard     *Expression
+	armBody   []Statement
 	trigger   string
 	args      []any
 }
 
+type selectHit struct {
+	armIndex int
+	message  chains.Message
+	fields   map[string]any
+}
+
+type selectGroup struct {
+	won    bool
+	winner chan selectHit
+	waits  []*wait
+}
+
 type wait struct {
-	placement chains.PlacementFilter
-	ctx       context.Context
-	pattern   map[string]any
-	event     chan matchedEvent
+	key         string
+	placement   chains.PlacementFilter
+	ctx         context.Context
+	pattern     map[string]any
+	binding     string
+	guard       *Expression
+	env         map[string]any
+	event       chan matchedEvent
+	selectGroup *selectGroup
+	armIndex    int
 }
 type execution struct {
 	runtime  *Runtime
@@ -96,7 +134,7 @@ func New(ctx context.Context, host Host, calendar Calendar, log *slog.Logger, ru
 	if len(traces) > 0 {
 		r.trace = traces[0]
 	}
-	r.active = map[string]*opening{}
+	r.active = map[string]*ruleGroup{}
 	var prepared []*Prepared
 	seen := map[string]bool{}
 	for _, rule := range rules {
@@ -117,7 +155,34 @@ func New(ctx context.Context, host Host, calendar Calendar, log *slog.Logger, ru
 }
 
 // Prepared is a validated rule that has yet to be activated.
-type Prepared struct{ entry *opening }
+type Prepared struct{ group *ruleGroup }
+
+func (r *Runtime) prepareOpeningArm(e *execution, group *ruleGroup, index int, at Position, binding string, call *Expression, guard *Expression, armBody []Statement) (*opening, error) {
+	o := &opening{group: group, index: index, binding: binding, guard: guard, armBody: armBody, trigger: call.Text}
+	args, params, err := e.arguments(call)
+	if err != nil {
+		return nil, err
+	}
+	if o.trigger == "Event" {
+		o.placement, err = extractPlacement(params)
+		if err != nil {
+			return nil, invalid(at, "%v", err)
+		}
+		if err := validateEventPattern(params); err != nil {
+			return nil, invalid(at, "%v", err)
+		}
+		if err := validateEventDevice(params); err != nil {
+			return nil, invalid(at, "%v", err)
+		}
+		o.pattern = params
+	} else {
+		o.args = calendarArgs(args, params)
+		if _, err = r.calendar.next(o.trigger, o.args, time.Now()); err != nil {
+			return nil, invalid(at, "%v", err)
+		}
+	}
+	return o, nil
+}
 
 func (r *Runtime) Prepare(rule Rule) (*Prepared, error) {
 	if err := Validate(rule); err != nil {
@@ -134,31 +199,24 @@ func (r *Runtime) Prepare(rule Rule) (*Prepared, error) {
 	if err := e.block(rule.Body[:start]); err != nil {
 		return nil, err
 	}
+	group := &ruleGroup{rule: rule, initial: e.env, tail: rule.Body[start+1:]}
 	first := rule.Body[start]
-	o := &opening{rule: rule, initial: e.env, binding: first.Name, body: rule.Body[start+1:], trigger: first.Value.Text}
-	args, params, err := e.arguments(first.Value)
-	if err != nil {
-		return nil, err
-	}
-	if o.trigger == "Event" {
-		o.placement, err = extractPlacement(params)
-		if err != nil {
-			return nil, invalid(first.At, "%v", err)
+	if first.Kind == "select" {
+		for i, arm := range first.Arms {
+			o, err := r.prepareOpeningArm(e, group, i, arm.At, arm.Binding, arm.Wait, arm.Guard, arm.Body)
+			if err != nil {
+				return nil, err
+			}
+			group.arms = append(group.arms, o)
 		}
-		if err := validateEventPattern(params); err != nil {
-			return nil, invalid(first.At, "%v", err)
-		}
-		if err := validateEventDevice(params); err != nil {
-			return nil, invalid(first.At, "%v", err)
-		}
-		o.pattern = params
 	} else {
-		o.args = calendarArgs(args, params)
-		if _, err = r.calendar.next(o.trigger, o.args, time.Now()); err != nil {
-			return nil, invalid(first.At, "%v", err)
+		o, err := r.prepareOpeningArm(e, group, 0, first.At, first.Name, first.Value, first.Guard, nil)
+		if err != nil {
+			return nil, err
 		}
+		group.arms = []*opening{o}
 	}
-	return &Prepared{o}, nil
+	return &Prepared{group}, nil
 }
 
 // Apply installs prepared rules and cancels the rules they replace.
@@ -169,31 +227,35 @@ func (r *Runtime) Apply(remove []string, add []*Prepared) {
 		return
 	}
 	for _, name := range remove {
-		o := r.active[name]
-		if o == nil {
+		g := r.active[name]
+		if g == nil {
 			continue
 		}
-		o.cancel()
+		g.cancel()
 		delete(r.active, name)
-		if o.trigger == "Event" {
-			key, _ := o.pattern["type"].(string)
-			r.openings[key] = slices.DeleteFunc(r.openings[key], func(item *opening) bool { return item == o })
-			if len(r.openings[key]) == 0 {
-				delete(r.openings, key)
+		for _, o := range g.arms {
+			if o.trigger == "Event" {
+				key, _ := o.pattern["type"].(string)
+				r.openings[key] = slices.DeleteFunc(r.openings[key], func(item *opening) bool { return item == o })
+				if len(r.openings[key]) == 0 {
+					delete(r.openings, key)
+				}
 			}
 		}
 	}
 	for _, item := range add {
-		o := item.entry
-		o.ctx, o.cancel = context.WithCancel(r.ctx)
-		o.runs = map[*execution]context.CancelFunc{}
-		r.active[o.rule.Name] = o
-		if o.trigger == "Event" {
-			key, _ := o.pattern["type"].(string)
-			r.openings[key] = append(r.openings[key], o)
-		} else if !r.calendar.Disabled {
-			r.wg.Add(1)
-			go r.schedule(o)
+		g := item.group
+		g.ctx, g.cancel = context.WithCancel(r.ctx)
+		g.runs = map[string]map[*execution]context.CancelFunc{}
+		r.active[g.rule.Name] = g
+		for _, o := range g.arms {
+			if o.trigger == "Event" {
+				key, _ := o.pattern["type"].(string)
+				r.openings[key] = append(r.openings[key], o)
+			} else if !r.calendar.Disabled {
+				r.wg.Add(1)
+				go r.schedule(o)
+			}
 		}
 	}
 }
@@ -227,6 +289,41 @@ func stringSliceAny(values []string) []any {
 	return out
 }
 
+type waitCandidate struct {
+	w       *wait
+	matched map[string]any
+}
+
+type openingCandidate struct {
+	o       *opening
+	matched map[string]any
+}
+
+func (r *Runtime) evalGuard(ctx context.Context, baseEnv map[string]any, binding string, matched map[string]any, guard *Expression) bool {
+	if guard == nil {
+		return true
+	}
+	env := maps.Clone(baseEnv)
+	if env == nil {
+		env = map[string]any{}
+	}
+	if binding != "" {
+		env[binding] = matched
+	}
+	e := &execution{runtime: r, env: env, budget: 2000, ctx: ctx}
+	value, err := e.expr(guard)
+	if err != nil {
+		r.log.Warn("rule guard error", "error", err)
+		return false
+	}
+	ok, isBool := value.(bool)
+	if !isBool {
+		r.log.Warn("rule guard did not evaluate to boolean")
+		return false
+	}
+	return ok
+}
+
 func (r *Runtime) Dispatch(m chains.Message) {
 	keys := []string{m.Type}
 	if m.Type != chains.Changed {
@@ -237,23 +334,27 @@ func (r *Runtime) Dispatch(m chains.Message) {
 		r.mu.Unlock()
 		return
 	}
-	hasCandidates := false
+	var candWaits []*wait
+	var candOpenings []*opening
 	var namedToResolve []namedDeviceRef
 	for _, key := range keys {
-		waits := r.waits[key]
-		openings := r.openings[key]
-		if len(waits) == 0 && len(openings) == 0 {
-			continue
-		}
-		hasCandidates = true
-		for w := range waits {
+		for w := range r.waits[key] {
+			if w.ctx.Err() != nil {
+				delete(r.waits[key], w)
+				continue
+			}
+			candWaits = append(candWaits, w)
 			if name, ok := w.pattern["device"].(namedDeviceRef); ok && (m.ServiceName == "" || name.service == m.ServiceName) {
 				if !slices.Contains(namedToResolve, name) {
 					namedToResolve = append(namedToResolve, name)
 				}
 			}
 		}
-		for _, o := range openings {
+		if len(r.waits[key]) == 0 {
+			delete(r.waits, key)
+		}
+		for _, o := range r.openings[key] {
+			candOpenings = append(candOpenings, o)
 			if name, ok := o.pattern["device"].(namedDeviceRef); ok && (m.ServiceName == "" || name.service == m.ServiceName) {
 				if !slices.Contains(namedToResolve, name) {
 					namedToResolve = append(namedToResolve, name)
@@ -262,7 +363,7 @@ func (r *Runtime) Dispatch(m chains.Message) {
 		}
 	}
 	r.mu.Unlock()
-	if !hasCandidates {
+	if len(candWaits) == 0 && len(candOpenings) == 0 {
 		return
 	}
 
@@ -304,30 +405,83 @@ func (r *Runtime) Dispatch(m chains.Message) {
 		}
 	}
 
+	// Match patterns and evaluate when guards outside r.mu so State()/ResolveDevice() never block dispatch lock.
+	var matchedWaits []waitCandidate
+	selectBest := map[*selectGroup]waitCandidate{}
+	for _, w := range candWaits {
+		if w.ctx.Err() != nil {
+			continue
+		}
+		matched := r.eventMatch(w.pattern, w.placement, fields, patches, allPatches, resolved)
+		if matched == nil || !r.evalGuard(w.ctx, w.env, w.binding, matched, w.guard) {
+			continue
+		}
+		if w.selectGroup != nil {
+			if prev, exists := selectBest[w.selectGroup]; !exists || w.armIndex < prev.w.armIndex {
+				selectBest[w.selectGroup] = waitCandidate{w: w, matched: matched}
+			}
+		} else {
+			matchedWaits = append(matchedWaits, waitCandidate{w: w, matched: matched})
+		}
+	}
+	for _, best := range selectBest {
+		matchedWaits = append(matchedWaits, best)
+	}
+
+	bestOpenings := map[*ruleGroup]openingCandidate{}
+	var openingOrder []*ruleGroup
+	for _, o := range candOpenings {
+		if o.group.ctx.Err() != nil {
+			continue
+		}
+		matched := r.eventMatch(o.pattern, o.placement, fields, patches, allPatches, resolved)
+		if matched == nil || !r.evalGuard(o.group.ctx, o.group.initial, o.binding, matched, o.guard) {
+			continue
+		}
+		if prev, exists := bestOpenings[o.group]; !exists {
+			bestOpenings[o.group] = openingCandidate{o: o, matched: matched}
+			openingOrder = append(openingOrder, o.group)
+		} else if o.index < prev.o.index {
+			bestOpenings[o.group] = openingCandidate{o: o, matched: matched}
+		}
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {
 		return
 	}
-	for _, key := range keys {
-		for w := range r.waits[key] {
-			if w.ctx.Err() != nil {
-				delete(r.waits[key], w)
+	for _, hit := range matchedWaits {
+		w := hit.w
+		if w.ctx.Err() != nil || !r.waits[w.key][w] {
+			continue
+		}
+		if sg := w.selectGroup; sg != nil {
+			if sg.won {
 				continue
 			}
-			if matched := r.eventMatch(w.pattern, w.placement, fields, patches, allPatches, resolved); matched != nil {
-				w.event <- matchedEvent{m, matched}
-				delete(r.waits[key], w)
+			sg.won = true
+			sg.winner <- selectHit{armIndex: w.armIndex, message: m, fields: hit.matched}
+			for _, sibling := range sg.waits {
+				delete(r.waits[sibling.key], sibling)
+				if len(r.waits[sibling.key]) == 0 {
+					delete(r.waits, sibling.key)
+				}
+			}
+		} else {
+			w.event <- matchedEvent{m, hit.matched}
+			delete(r.waits[w.key], w)
+			if len(r.waits[w.key]) == 0 {
+				delete(r.waits, w.key)
 			}
 		}
-		if len(r.waits[key]) == 0 {
-			delete(r.waits, key)
+	}
+	for _, g := range openingOrder {
+		if r.active[g.rule.Name] != g {
+			continue
 		}
-		for _, o := range r.openings[key] {
-			if matched := r.eventMatch(o.pattern, o.placement, fields, patches, allPatches, resolved); matched != nil {
-				r.start(o, m, matched)
-			}
-		}
+		hit := bestOpenings[g]
+		r.start(hit.o, m, hit.matched)
 	}
 }
 
@@ -494,25 +648,51 @@ func matches(pattern map[string]any, overrideDevice *DeviceRef, skipAttrValue bo
 	return true
 }
 
-func (r *Runtime) start(o *opening, m chains.Message, fields map[string]any) {
-	if o.rule.Mode == "restart" {
-		for prev, cancel := range o.runs {
-			cancel()
-			delete(o.runs, prev)
+func scopeKey(scope string, m chains.Message, fields map[string]any) string {
+	switch scope {
+	case "device":
+		if ref, ok := fields["device"].(DeviceRef); ok {
+			return ref.address()
 		}
-		o.running = 0
-	} else if o.running >= o.rule.Concurrency {
-		r.emitTrace("rule.skipped", o.rule.Name, "", m, "at capacity")
-		r.log.Debug("rule at capacity", "rule", o.rule.Name, "event", m.ID)
+		if m.ServiceID != "" && m.DeviceID != "" {
+			return m.ServiceID + "/" + m.DeviceID
+		}
+	case "service":
+		if m.ServiceID != "" {
+			return m.ServiceID
+		}
+		if m.Source != "" {
+			return m.Source
+		}
+	}
+	return ""
+}
+
+func (r *Runtime) start(o *opening, m chains.Message, fields map[string]any) {
+	g := o.group
+	skey := scopeKey(g.rule.Scope, m, fields)
+	bucket := g.runs[skey]
+	if g.rule.Mode == "restart" {
+		for prev, cancel := range bucket {
+			cancel()
+			delete(bucket, prev)
+		}
+		g.syncRunning()
+	} else if len(bucket) >= g.rule.Concurrency {
+		r.emitTrace("rule.skipped", g.rule.Name, "", m, "at capacity")
+		r.log.Debug("rule at capacity", "rule", g.rule.Name, "event", m.ID)
 		return
 	}
-	runCtx, runCancel := context.WithCancel(o.ctx)
-	e := &execution{runtime: r, rule: o.rule, env: maps.Clone(o.initial), ctx: runCtx}
-	if o.runs == nil {
-		o.runs = map[*execution]context.CancelFunc{}
+	runCtx, runCancel := context.WithCancel(g.ctx)
+	e := &execution{runtime: r, rule: g.rule, env: maps.Clone(g.initial), ctx: runCtx}
+	if g.runs == nil {
+		g.runs = map[string]map[*execution]context.CancelFunc{}
 	}
-	o.runs[e] = runCancel
-	o.running = len(o.runs)
+	if g.runs[skey] == nil {
+		g.runs[skey] = map[*execution]context.CancelFunc{}
+	}
+	g.runs[skey][e] = runCancel
+	g.syncRunning()
 	if r.trace != nil {
 		e.runID = chains.ID()
 	}
@@ -525,18 +705,29 @@ func (r *Runtime) start(o *opening, m chains.Message, fields map[string]any) {
 		defer r.wg.Done()
 		defer func() {
 			r.mu.Lock()
-			delete(o.runs, e)
-			o.running = len(o.runs)
+			if b := g.runs[skey]; b != nil {
+				delete(b, e)
+				if len(b) == 0 {
+					delete(g.runs, skey)
+				}
+			}
+			g.syncRunning()
 			r.mu.Unlock()
 			runCancel()
 		}()
 		var started time.Time
 		if r.trace != nil {
 			started = time.Now()
-			r.emitTrace("rule.started", o.rule.Name, e.runID, m, "")
+			r.emitTrace("rule.started", g.rule.Name, e.runID, m, "")
 		}
-		r.log.Debug("rule matched", "rule", o.rule.Name, "event", m.ID)
-		err := e.block(o.body)
+		r.log.Debug("rule matched", "rule", g.rule.Name, "event", m.ID)
+		var err error
+		if len(o.armBody) > 0 {
+			err = e.caseBody(o.armBody)
+		}
+		if err == nil {
+			err = e.block(g.tail)
+		}
 		kind, summary := "rule.finished", ""
 		if r.trace != nil {
 			summary = time.Since(started).String()
@@ -550,10 +741,10 @@ func (r *Runtime) start(o *opening, m chains.Message, fields map[string]any) {
 			if err != nil && !errors.Is(err, errReturn) {
 				summary += " · " + err.Error()
 			}
-			r.emitTrace(kind, o.rule.Name, e.runID, m, summary)
+			r.emitTrace(kind, g.rule.Name, e.runID, m, summary)
 		}
 		if err != nil && !errors.Is(err, errReturn) {
-			r.log.Warn("rule exited", "rule", o.rule.Name, "event", m.ID, "error", err)
+			r.log.Warn("rule exited", "rule", g.rule.Name, "event", m.ID, "error", err)
 		}
 	}()
 }
@@ -575,22 +766,23 @@ func (r *Runtime) emitTrace(kind, rule, run string, m chains.Message, summary st
 
 func (r *Runtime) schedule(o *opening) {
 	defer r.wg.Done()
+	g := o.group
 	after := time.Now()
 	for {
 		next, err := r.calendar.next(o.trigger, o.args, after)
 		if err != nil {
-			r.log.Error("schedule stopped", "rule", o.rule.Name, "error", err)
+			r.log.Error("schedule stopped", "rule", g.rule.Name, "error", err)
 			return
 		}
 		timer := time.NewTimer(time.Until(next))
 		select {
-		case <-o.ctx.Done():
+		case <-g.ctx.Done():
 			timer.Stop()
 			return
 		case <-timer.C:
 			m, _ := chains.New("time.matched", "scheduler", map[string]any{"time": next})
 			r.mu.Lock()
-			if !r.closed && o.ctx.Err() == nil {
+			if !r.closed && g.ctx.Err() == nil {
 				r.start(o, m, eventFields(m))
 			}
 			r.mu.Unlock()
@@ -646,14 +838,18 @@ func (e *execution) until() (context.Context, context.CancelFunc) {
 	return context.WithDeadline(e.ctx, e.deadline)
 }
 
-func (e *execution) await(pattern map[string]any, waitTimeout time.Duration, hasTimeout bool) (any, error) {
+func (e *execution) await(pattern map[string]any, waitTimeout time.Duration, hasTimeout bool, binding string, guard *Expression) (any, error) {
 	r := e.runtime
 	placement, err := extractPlacement(pattern)
 	if err != nil {
 		return nil, err
 	}
-	w := &wait{placement: placement, ctx: e.ctx, pattern: pattern, event: make(chan matchedEvent, 1)}
 	key, _ := pattern["type"].(string)
+	var envCopy map[string]any
+	if guard != nil {
+		envCopy = maps.Clone(e.env)
+	}
+	w := &wait{key: key, placement: placement, ctx: e.ctx, pattern: pattern, binding: binding, guard: guard, env: envCopy, event: make(chan matchedEvent, 1)}
 	r.mu.Lock()
 	if err := e.ctx.Err(); err != nil {
 		r.mu.Unlock()
@@ -692,6 +888,144 @@ func (e *execution) await(pattern map[string]any, waitTimeout time.Duration, has
 		}
 		e.match(matched.message)
 		return matched.fields, nil
+	}
+}
+
+func (e *execution) execSelect(s Statement) error {
+	r := e.runtime
+	sg := &selectGroup{winner: make(chan selectHit, 1)}
+	type timedArm struct {
+		armIndex int
+		fireAt   time.Time
+		isSleep  bool
+	}
+	var earliest *timedArm
+	now := time.Now()
+	for i, arm := range s.Arms {
+		args, named, err := e.arguments(arm.Wait)
+		if err != nil {
+			return fmt.Errorf("%d:%d: %w", arm.At.Line, arm.At.Column, err)
+		}
+		switch arm.Wait.Text {
+		case "Event":
+			if err := validateEventPattern(named); err != nil {
+				return fmt.Errorf("%d:%d: %w", arm.At.Line, arm.At.Column, err)
+			}
+			if err := validateEventDevice(named); err != nil {
+				return fmt.Errorf("%d:%d: %w", arm.At.Line, arm.At.Column, err)
+			}
+			placement, err := extractPlacement(named)
+			if err != nil {
+				return fmt.Errorf("%d:%d: %w", arm.At.Line, arm.At.Column, err)
+			}
+			key, _ := named["type"].(string)
+			var envCopy map[string]any
+			if arm.Guard != nil {
+				envCopy = maps.Clone(e.env)
+			}
+			sg.waits = append(sg.waits, &wait{
+				key: key, placement: placement, ctx: e.ctx, pattern: named,
+				binding: arm.Binding, guard: arm.Guard, env: envCopy,
+				selectGroup: sg, armIndex: i,
+			})
+		case "Sleep":
+			d, ok := durationValue(args[0])
+			if !ok {
+				return invalid(arm.At, "Sleep expects nonnegative seconds or duration string within the supported duration")
+			}
+			fireAt := now.Add(d)
+			if earliest == nil || fireAt.Before(earliest.fireAt) {
+				earliest = &timedArm{armIndex: i, fireAt: fireAt, isSleep: true}
+			}
+		case "Every", "Time":
+			if r.calendar.Disabled {
+				return invalid(arm.At, "scheduler is disabled")
+			}
+			next, err := r.calendar.next(arm.Wait.Text, calendarArgs(args, named), now)
+			if err != nil {
+				return fmt.Errorf("%d:%d: %w", arm.At.Line, arm.At.Column, err)
+			}
+			if earliest == nil || next.Before(earliest.fireAt) {
+				earliest = &timedArm{armIndex: i, fireAt: next, isSleep: false}
+			}
+		}
+	}
+	if len(sg.waits) > 0 {
+		r.mu.Lock()
+		if err := e.ctx.Err(); err != nil {
+			r.mu.Unlock()
+			return err
+		}
+		for _, w := range sg.waits {
+			if r.waits[w.key] == nil {
+				r.waits[w.key] = map[*wait]bool{}
+			}
+			r.waits[w.key][w] = true
+		}
+		r.mu.Unlock()
+		defer func() {
+			r.mu.Lock()
+			for _, w := range sg.waits {
+				delete(r.waits[w.key], w)
+				if len(r.waits[w.key]) == 0 {
+					delete(r.waits, w.key)
+				}
+			}
+			r.mu.Unlock()
+		}()
+	}
+	ctx, cancel := e.until()
+	defer cancel()
+	var timerCh <-chan time.Time
+	if earliest != nil {
+		timer := time.NewTimer(time.Until(earliest.fireAt))
+		defer timer.Stop()
+		timerCh = timer.C
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case hit := <-sg.winner:
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		e.match(hit.message)
+		arm := s.Arms[hit.armIndex]
+		if arm.Binding != "" {
+			e.env[arm.Binding] = hit.fields
+		}
+		return e.caseBody(arm.Body)
+	case <-timerCh:
+		r.mu.Lock()
+		alreadyWon := sg.won
+		if !alreadyWon {
+			sg.won = true
+		}
+		r.mu.Unlock()
+		if alreadyWon {
+			hit := <-sg.winner
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			e.match(hit.message)
+			arm := s.Arms[hit.armIndex]
+			if arm.Binding != "" {
+				e.env[arm.Binding] = hit.fields
+			}
+			return e.caseBody(arm.Body)
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		arm := s.Arms[earliest.armIndex]
+		if !earliest.isSleep {
+			m, _ := chains.New("time.matched", "scheduler", map[string]any{"time": earliest.fireAt})
+			e.match(m)
+			if arm.Binding != "" {
+				e.env[arm.Binding] = eventFields(m)
+			}
+		}
+		return e.caseBody(arm.Body)
 	}
 }
 
@@ -747,36 +1081,43 @@ func pairs(args []any) (map[string]any, error) {
 	return m, nil
 }
 
+func (e *execution) callEvent(x *Expression, binding string, guard *Expression) (any, error) {
+	_, named, err := e.arguments(x)
+	if err != nil {
+		return nil, err
+	}
+	var waitTimeout time.Duration
+	var hasTimeout bool
+	if rawTimeout, ok := named["timeout"]; ok {
+		d, durOK := durationValue(rawTimeout)
+		if !durOK {
+			return nil, errors.New("Event timeout expects nonnegative seconds or duration string within the supported duration")
+		}
+		waitTimeout, hasTimeout = d, true
+		delete(named, "timeout")
+	}
+	if err := validateEventPattern(named); err != nil {
+		return nil, err
+	}
+	if err := validateEventDevice(named); err != nil {
+		return nil, err
+	}
+	return e.await(named, waitTimeout, hasTimeout, binding, guard)
+}
+
 func (e *execution) call(x *Expression) (any, error) {
+	if x.Text == "Event" {
+		return e.callEvent(x, "", nil)
+	}
 	args, named, err := e.arguments(x)
 	if err != nil {
 		return nil, err
 	}
 	switch x.Text {
-	case "Event":
-		var waitTimeout time.Duration
-		var hasTimeout bool
-		if rawTimeout, ok := named["timeout"]; ok {
-			seconds, numOK := number(rawTimeout)
-			d, durOK := secondsDuration(seconds)
-			if !numOK || !durOK {
-				return nil, errors.New("Event timeout expects nonnegative seconds within the supported duration")
-			}
-			waitTimeout, hasTimeout = d, true
-			delete(named, "timeout")
-		}
-		if err := validateEventPattern(named); err != nil {
-			return nil, err
-		}
-		if err := validateEventDevice(named); err != nil {
-			return nil, err
-		}
-		return e.await(named, waitTimeout, hasTimeout)
 	case "Sleep":
-		seconds, ok := number(args[0])
-		d, durOK := secondsDuration(seconds)
-		if !ok || !durOK {
-			return nil, errors.New("Sleep expects nonnegative seconds within the supported duration")
+		d, durOK := durationValue(args[0])
+		if !durOK {
+			return nil, errors.New("Sleep expects nonnegative seconds or duration string within the supported duration")
 		}
 		ctx, cancel := e.until()
 		defer cancel()
@@ -931,6 +1272,31 @@ func (e *execution) call(x *Expression) (any, error) {
 		}
 	case "Now":
 		return float64(time.Now().UTC().UnixNano()) / float64(time.Second), nil
+	case "LocalTime":
+		zone := e.runtime.calendar.Zone
+		if zone == nil {
+			zone = time.Local
+		}
+		now := time.Now().In(zone)
+		return map[string]any{
+			"year":    float64(now.Year()),
+			"month":   float64(now.Month()),
+			"day":     float64(now.Day()),
+			"weekday": float64(now.Weekday()),
+			"hour":    float64(now.Hour()),
+			"minute":  float64(now.Minute()),
+			"second":  float64(now.Second()),
+		}, nil
+	case "Duration":
+		raw, ok := args[0].(string)
+		if !ok {
+			return nil, errors.New("Duration expects a duration string")
+		}
+		d, durOK := parseDurationString(raw)
+		if !durOK {
+			return nil, errors.New("invalid duration string")
+		}
+		return float64(d) / float64(time.Second), nil
 	case "ParseTime":
 		raw, ok := args[0].(string)
 		if !ok {

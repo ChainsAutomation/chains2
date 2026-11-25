@@ -23,15 +23,15 @@ Rules are **live, stateful workflows**: an opening trigger starts a run in its o
 
 Every rule follows the same top-to-bottom structure:
 
-1. **Optional rule settings** (`rule.mode`, `rule.concurrency`, `rule.timeout`) at the very top.
+1. **Optional rule settings** (`rule.mode`, `rule.scope`, `rule.concurrency`, `rule.timeout`) at the very top.
 2. **Optional pure setup assignments** (device aliases, constants, pure expressions).
-3. **One opening wait** — `Event()`, `Every()`, or `Time()` — that triggers each run.
+3. **One opening wait** — `Event()`, `Every()`, `Time()`, or `select:` — that triggers each run.
 4. **The rule body** — statements that execute sequentially once the opening wait matches.
 
 ```text
 # 1. Optional settings
 rule.mode = "restart"
-rule.timeout = 600
+rule.timeout = "10m"
 
 # 2. Optional pure setup
 sensor = Device(service_id="zigbee2mqtt", device_id="0x00158d0001a2b3c4")
@@ -42,7 +42,7 @@ Event(type="state.changed", device=sensor, attribute="occupancy", value=true, in
 
 # 4. Body
 Set(device=lamp, attribute="power", value=true)
-Sleep(120)
+Sleep("2m")
 Set(device=lamp, attribute="power", value=false)
 ```
 
@@ -58,8 +58,9 @@ Place settings before any assignments or triggers. Each setting may appear at mo
 | Setting | Type / Values | Default | Description |
 | --- | --- | --- | --- |
 | `rule.mode` | `"drop"` or `"restart"` | `"drop"` | `"drop"` skips new opening matches while all concurrency slots are busy. `"restart"` cancels the active run and starts fresh on a new opening match (requires single concurrency). |
-| `rule.concurrency` | Integer `1`–`1024` | `1` | Maximum simultaneous runs for this rule. Cannot be `> 1` when `rule.mode = "restart"`. |
-| `rule.timeout` | Positive number (seconds) | `300` | Overall run deadline starting from the opening match. Applies across later waits, `Sleep()`, actions, and computation. Fractional seconds (e.g., `0.5`) are supported. |
+| `rule.scope` | `"rule"`, `"device"`, or `"service"` | `"rule"` | Controls how `rule.concurrency` and `rule.mode = "restart"` are partitioned: across the whole rule, independently per triggering `ev.device`, or per `service_id`. |
+| `rule.concurrency` | Integer `1`–`1024` | `1` | Maximum simultaneous runs per scope key. Cannot be `> 1` when `rule.mode = "restart"`. |
+| `rule.timeout` | Positive number (seconds) or duration string (`"15m"`, `"500ms"`) | `300` | Overall run deadline starting from the opening match. Applies across later waits, `Sleep()`, actions, and computation. |
 
 ```text
 rule.concurrency = 4
@@ -132,12 +133,23 @@ A single observation can update several devices atomically in one State revision
 - Each patch has `device`, `device_id`, `device_name`, `device_classes`, `location`, `tags`, `values` (exact reported State attributes), and `data` (event payload).
 - When **exactly one** patch matches, `ev.device`, `ev.device_id`, `ev.values`, `ev.data`, `ev.location`, `ev.tags`, and `ev.device_classes` are also exposed directly on `ev`.
 
-#### Follow-up waits and per-wait timeouts
+#### Follow-up waits, `when` guards, and per-wait timeouts
 
-Any `Event()` after the opening wait suspends only the current run until a matching event arrives. Pass `timeout=<seconds>` on a non-opening `Event()` to bound that single wait without aborting the whole run:
+Any `Event()` after the opening wait suspends only the current run until a matching event arrives.
+
+- **Pre-admission `when` guards:** Append `when <condition>` to an opening or mid-rule `Event()` to filter events **before** admitting, restarting, or waking a run. Guards can inspect the bound event variable as well as read-only `State()`, `Devices()`, `LocalTime()`, and `Now()`:
+
+  ```text
+  rule.mode = "restart"
+  ev = Event(type="humidity.reported", device=sensor) when ev.data.value >= 70 and State(fan).power == false
+  ```
+
+  Events whose guard evaluates to `false` do not cancel active `rule.mode = "restart"` runs or wake a mid-rule wait.
+
+- **Per-wait timeouts:** Pass `timeout=<seconds or duration string>` on a non-opening `Event()` to bound that single wait without aborting the whole run:
 
 ```text
-next = Event(type="state.changed", device=motion, attribute="occupancy", value=false, timeout=300)
+next = Event(type="state.changed", device=motion, attribute="occupancy", value=false, timeout="5m")
 if next == null:
     # No occupancy=false arrived within 5 minutes
     Set(device=lamp, attribute="power", value=false)
@@ -145,7 +157,28 @@ if next == null:
 
 - If the wait times out before the rule's overall `rule.timeout` deadline, `Event(...)` returns `null`.
 - If a matching event arrives, `Event(...)` returns the matched event object, updates correlation to that event, and refreshes the 10,000-step instruction budget (while keeping the original run deadline).
-- `timeout=` is only valid on non-opening `Event()` calls.
+- `timeout=` is only valid on non-opening `Event()` calls (and inside `select:`, use `case Sleep(...):` instead).
+
+---
+
+### Multi-pattern waits: `select:`
+
+Use `select:` to listen for **multiple distinct triggers or waits at once**—both as the opening trigger of a rule and mid-rule. Each `case` arm takes one wait call (`Event()`, `Every()`, `Time()`, or `Sleep()` in mid-rule `select:`), an optional binding (`case ev = ...:`), an optional `when` guard on `Event()`, and its own branch body.
+
+```text
+select:
+    case ev = Event(type="state.changed", device=door, attribute="contact", value=false, initial=false):
+        Set(device=lamp, attribute="power", value=true)
+    case ev = Event(type="state.changed", device=motion, attribute="occupancy", value=true, initial=false):
+        Set(device=lamp, attribute="power", value=true)
+    case Time(hour=23, minute=30):
+        Set(device=lamp, attribute="power", value=false)
+        return
+```
+
+- **Opening `select:`:** All `case` arms share the rule's `rule.mode`, `rule.scope`, and `rule.concurrency`. When an arm matches, its body executes and then continues to any statements after `select:` (unless that arm calls `return`). If one observation matches multiple arms, the **first matching arm in source order** wins.
+- **Mid-rule `select:`:** Races all `Event()`, `Time()`, `Every()`, and `Sleep()` arms simultaneously. The first arm to fire wins, sibling waits and timers are immediately cleaned up, and only the winning arm's body runs. Use `break` inside a case to leave `select:` early.
+- **Scoping:** Variables assigned in every non-returning `case` arm (including an identical binding name on every non-returning arm) are available after `select:`.
 
 ---
 
@@ -173,13 +206,13 @@ Time(day=1)                                  # First of every month at 00:00:00
 
 ---
 
-### `Sleep(seconds)`
+### `Sleep(duration)`
 
-`Sleep(seconds)` pauses the current run for the given number of seconds (fractional values like `0.25` are supported). It respects the run's overall deadline, cancellation, and `rule.mode = "restart"`.
+`Sleep()` pauses the current run for the given duration—either numeric seconds (fractional values like `0.25` are supported) or a duration string such as `"2m"` or `"500ms"`. It respects the run's overall deadline, cancellation, and `rule.mode = "restart"`.
 
 ```text
 Set(device=first_light, attribute="power", value=true, wait="sent")
-Sleep(2)
+Sleep("2s")
 Set(device=second_light, attribute="power", value=true, wait="sent")
 ```
 
@@ -353,7 +386,9 @@ for d in Devices(device_class=light):
 | `Exists(value)` | Yes | `true` if `value != null`. |
 | `Len(x)` | Yes | Number of runes in a string, items in a list, or keys in an object. |
 | `Now()` | No | Current UTC Unix timestamp in seconds (float). |
+| `LocalTime()` | No | Current local clock object (`year`, `month`, `day`, `weekday` with `0` = Sunday, `hour`, `minute`, `second`) in the engine's configured timezone. |
 | `ParseTime(rfc3339)` | Yes | Parses an RFC3339 / RFC3339Nano timestamp string into UTC Unix seconds (float). |
+| `Duration(str)` | Yes | Parses a duration string (e.g., `"30m"`, `"1h30m"`) into seconds (float). |
 | `Min(a, b)` / `Max(a, b)` | Yes | Smaller / larger of two numbers. |
 | `Abs(x)` / `Round(x)` | Yes | Absolute value / nearest integer of a number. |
 | `Device(...)` | Yes | Builds a single device reference by ID pair or name pair. |
@@ -502,6 +537,64 @@ if result.status == "failed" or result.status == "timed_out":
     Action("send", service_name=Notifications, device_name=system,
            title="Porch light failed",
            message="Could not turn on porch light")
+```
+
+### 9. Multi-sensor hallway light with manual override (`select:` + `LocalTime()`)
+
+Turns on the hallway light when either the door opens or motion is detected, adapts brightness by local time of day, and races occupancy clearing against a manual wall-switch off or a 10-minute fallback timeout.
+
+```text
+rule.mode = "restart"
+rule.timeout = "15m"
+
+door        = Device(service_id="zigbee2mqtt", device_id="0x00158d0001111111")
+motion      = Device(service_id="zigbee2mqtt", device_id="0x00158d0002222222")
+wall_switch = Device(service_id="zigbee2mqtt", device_id="0x00158d0003333333")
+lamp        = Device(service_name=Zigbee2MQTT, device_name="hall/light")
+
+select:
+    case Event(type="state.changed", device=door, attribute="contact", value=false, initial=false):
+        t = LocalTime()
+        if t.hour >= 22 or t.hour < 7:
+            Set(device=lamp, attribute="dimlevel", value=20)
+        else:
+            Set(device=lamp, attribute="dimlevel", value=100)
+    case Event(type="state.changed", device=motion, attribute="occupancy", value=true, initial=false):
+        t = LocalTime()
+        if t.hour >= 22 or t.hour < 7:
+            Set(device=lamp, attribute="dimlevel", value=20)
+        else:
+            Set(device=lamp, attribute="dimlevel", value=100)
+    case Time(hour=23, minute=30):
+        Set(device=lamp, attribute="power", value=false)
+        return
+
+select:
+    case Event(type="state.changed", device=motion, attribute="occupancy", value=false):
+        Sleep("2m")
+        Set(device=lamp, attribute="power", value=false)
+    case Event(type="zigbee2mqtt.action", device=wall_switch, action=off):
+        Set(device=lamp, attribute="power", value=false)
+        return
+    case Sleep("10m"):
+        Set(device=lamp, attribute="power", value=false)
+```
+
+### 10. Single-rule multi-room motion watchdog (`rule.scope = "device"` + `when`)
+
+One rule tracks every motion sensor independently: motion on one sensor restarts only that sensor's timer without affecting other rooms.
+
+```text
+rule.mode = "restart"
+rule.scope = "device"
+rule.timeout = "10m"
+
+ev = Event(type="state.changed", device_class=motion, attribute="occupancy", value=true, initial=false) when LocalTime().hour >= 22 or LocalTime().hour < 6
+Sleep("5m")
+if State(ev.device).occupancy == true:
+    Action("send", service_name=Notifications, device_name=system,
+           title="Sustained night motion",
+           message=ev.device_name + " remained occupied for 5 minutes")
 ```
 
 ---

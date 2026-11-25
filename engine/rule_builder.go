@@ -16,6 +16,8 @@ type ruleBuilder struct {
 	Interval    string              `json:"interval,omitempty"`
 	Selectors   map[string]any      `json:"selectors"`
 	Actions     []ruleBuilderAction `json:"actions"`
+	Mode        string              `json:"mode,omitempty"`
+	Scope       string              `json:"scope,omitempty"`
 	Concurrency int                 `json:"concurrency,omitempty"`
 	Timeout     float64             `json:"timeout,omitempty"`
 }
@@ -77,7 +79,7 @@ func formatBuilder(name string, b ruleBuilder) (string, error) {
 	if math.IsNaN(b.Timeout) || math.IsInf(b.Timeout, 0) || b.Timeout < 0 || b.Timeout > maxBuilderSeconds {
 		return "", errors.New("rule timeout is outside the supported range")
 	}
-	r := rules.Rule{Name: name, Concurrency: b.Concurrency, Timeout: time.Duration(math.Round(b.Timeout * float64(time.Second)))}
+	r := rules.Rule{Name: name, Mode: b.Mode, Scope: b.Scope, Concurrency: b.Concurrency, Timeout: time.Duration(math.Round(b.Timeout * float64(time.Second)))}
 	opening := &rules.Expression{Kind: "call", Text: b.Trigger}
 	switch b.Trigger {
 	case "Event", "Time":
@@ -208,7 +210,7 @@ func recognizeBuilder(item ruleSource) *ruleBuilder {
 		}
 	}
 	start := r.Body[0].Value
-	b := ruleBuilder{Trigger: start.Text, Concurrency: r.Concurrency, Timeout: r.Timeout.Seconds(), Selectors: map[string]any{}}
+	b := ruleBuilder{Trigger: start.Text, Mode: r.Mode, Scope: r.Scope, Concurrency: r.Concurrency, Timeout: r.Timeout.Seconds(), Selectors: map[string]any{}}
 	if b.Trigger == "Every" {
 		if len(start.Arguments) != 1 {
 			return nil

@@ -25,7 +25,7 @@ Chains connects your devices, sensors, and services over **MQTT 5** or **Redis S
 
 | Feature | What it gives you |
 | --- | --- |
-| **Readable, stateful rules** | Write automations in indentation-based `.chains` files—or use the guided web editor and [rule templates](docs/rule-templates.md). Support for retriggerable timers (`rule.mode = "restart"`), bounded follow-up waits (`Event(..., timeout=...)`), `Sleep()`, calendar schedules, loops, and live publishing without restarts. |
+| **Readable, stateful rules** | Write automations in indentation-based `.chains` files—or use the guided web editor and [rule templates](docs/rule-templates.md). Support for `select:` multi-trigger/wait races, pre-admission `when` guards, retriggerable timers (`rule.mode = "restart"`, `rule.scope = "device"`), bounded waits, `LocalTime()`, duration strings, calendar schedules, and live publishing without restarts. |
 | **No event/state race conditions** | Every observation commits device attributes atomically in SQLite *before* dispatching rules. Repeated readings (like button presses) still trigger rules, while leaf value changes emit `state.changed` notifications automatically. |
 | **Two purpose-built web apps + TUI** | A dedicated **Household app** (`/`) with custom dashboards and auto-generated device controls, an **Operator console** (`/ui/`) with live **Watch**, **Trace Explorer**, and rule management, plus the keyboard-driven `chainsctl` terminal UI. |
 | **Schema-first devices & placement** | Built-in classes (`toggle`, `light`, `dimmer`, `motion`), typed setters, hierarchical locations (`House.Bedroom.**`), and tags keep rules and dashboards decoupled from vendor quirks. |
@@ -228,7 +228,8 @@ With that source registered, `POST /events/humidity` bearing the token and a bod
 [0009 Declared operator State](docs/adr/0009-declared-operator-state.md) ·
 [0010 Configured token sources](docs/adr/0010-configured-token-sources.md) ·
 [0011 Rule template binding](docs/adr/0011-rule-template-binding.md) ·
-[0012 DSL extensions & performance](docs/adr/0012-rules-engine-dsl-and-performance.md)
+[0012 DSL extensions & performance](docs/adr/0012-rules-engine-dsl-and-performance.md) ·
+[0013 `select:`, guards & scoping](docs/adr/0013-rules-select-guards-and-scoping.md)
 
 ---
 

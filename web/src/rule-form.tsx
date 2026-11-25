@@ -4,7 +4,7 @@ import { Argument } from "./argument";
 import { Button, options, Picker } from "./components";
 
 export type RuleAction = { kind?: "delay"; seconds?: number; service_id: string; device_id: string; name: string; attribute?: string; wait?: string; version?: string; args: Record<string, Json> };
-export type Builder = { trigger: "Event" | "Every" | "Time"; interval?: string; selectors: Record<string, Json>; actions: RuleAction[]; concurrency?: number; timeout?: number };
+export type Builder = { trigger: "Event" | "Every" | "Time"; interval?: string; selectors: Record<string, Json>; actions: RuleAction[]; mode?: "drop" | "restart"; scope?: "rule" | "device" | "service"; concurrency?: number; timeout?: number };
 export const blankAction = (): RuleAction => ({ service_id: "", device_id: "", name: "", args: {} });
 export const blankBuilder = (): Builder => ({ trigger: "Event", selectors: {}, actions: [blankAction()] });
 
@@ -63,7 +63,22 @@ export function RuleForm(props: { value: Builder; services: Service[]; change: (
       }</For></div>
     </Show>
     <div class="rule-fields">
-      <label class="field"><span>Max concurrency</span><input type="number" min="1" max="1024" placeholder="1" value={props.value.concurrency ?? ""}
+      <label class="field"><span>Run mode</span><select value={props.value.mode ?? "drop"} onChange={e => {
+        const next = e.currentTarget.value as "drop" | "restart";
+        props.change({ ...props.value, mode: next === "drop" ? undefined : next, concurrency: next === "restart" ? undefined : props.value.concurrency });
+      }}>
+        <option value="drop">Skip while busy (drop)</option>
+        <option value="restart">Cancel active run (restart)</option>
+      </select></label>
+      <label class="field"><span>Run scope</span><select value={props.value.scope ?? "rule"} onChange={e => {
+        const next = e.currentTarget.value as "rule" | "device" | "service";
+        props.change({ ...props.value, scope: next === "rule" ? undefined : next });
+      }}>
+        <option value="rule">Whole rule</option>
+        <option value="device">Per device</option>
+        <option value="service">Per service</option>
+      </select></label>
+      <label class="field"><span>Max concurrency</span><input type="number" min="1" max="1024" placeholder="1" disabled={props.value.mode === "restart"} value={props.value.concurrency ?? ""}
         onInput={e => props.change({ ...props.value, concurrency: e.currentTarget.valueAsNumber || undefined })} /></label>
       <label class="field"><span>Timeout in seconds</span><input type="number" min="0" step="any" placeholder="300" value={props.value.timeout ?? ""}
         onInput={e => props.change({ ...props.value, timeout: e.currentTarget.valueAsNumber || undefined })} /></label>

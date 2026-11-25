@@ -11,9 +11,16 @@ import (
 
 func isTrigger(name string) bool { return name == "Event" || name == "Every" || name == "Time" }
 
+func isOpeningStatement(s Statement) bool {
+	if s.Kind == "select" {
+		return true
+	}
+	return (s.Kind == "assign" || s.Kind == "expression") && s.Value != nil && s.Value.Kind == "call" && isTrigger(s.Value.Text)
+}
+
 func openingIndex(rule Rule) int {
 	for i, s := range rule.Body {
-		if (s.Kind == "assign" || s.Kind == "expression") && s.Value != nil && s.Value.Kind == "call" && isTrigger(s.Value.Text) {
+		if isOpeningStatement(s) {
 			return i
 		}
 	}
@@ -41,7 +48,7 @@ func variable(name string) bool {
 		return false
 	}
 	switch name {
-	case "rule", "true", "false", "null", "if", "elseif", "else", "while", "for", "in", "switch", "case", "default", "break", "continue", "return", "and", "or", "not":
+	case "rule", "true", "false", "null", "if", "elseif", "else", "while", "for", "in", "switch", "select", "case", "default", "when", "break", "continue", "return", "and", "or", "not":
 		return false
 	}
 	return true
@@ -58,19 +65,22 @@ func Validate(rule Rule) error {
 	if rule.Mode != "" && rule.Mode != "drop" && rule.Mode != "restart" {
 		return fmt.Errorf("invalid mode %q for rule %q", rule.Mode, rule.Name)
 	}
+	if rule.Scope != "" && rule.Scope != "rule" && rule.Scope != "device" && rule.Scope != "service" {
+		return fmt.Errorf("invalid scope %q for rule %q", rule.Scope, rule.Name)
+	}
 	if rule.Mode == "restart" && rule.Concurrency > 1 {
 		return fmt.Errorf("rule %q cannot combine mode \"restart\" with concurrency > 1", rule.Name)
 	}
 	start := openingIndex(rule)
 	if start < 0 {
-		return fmt.Errorf("rule %q needs an opening Event(), Every(), or Time()", rule.Name)
+		return fmt.Errorf("rule %q needs an opening Event(), Every(), Time(), or select", rule.Name)
 	}
 	names := map[string]bool{}
 	for _, s := range rule.Body[:start] {
-		if s.Kind != "assign" {
+		if s.Kind != "assign" || s.Guard != nil {
 			return invalid(s.At, "only pure assignments may precede the opening wait")
 		}
-		if err := validateExpr(s.Value, names, false, true); err != nil {
+		if err := validateExpr(s.Value, names, false, exprPure); err != nil {
 			return err
 		}
 		if !variable(s.Name) {
@@ -79,7 +89,14 @@ func Validate(rule Rule) error {
 		names[s.Name] = true
 	}
 	opening := rule.Body[start]
-	if err := validateCall(opening.Value, names, false, true); err != nil {
+	if opening.Kind == "select" {
+		if _, err := validateSelect(opening, names, 0, 0, true); err != nil {
+			return err
+		}
+		_, err := validateBlock(rule.Body[start+1:], names, 0, 0)
+		return err
+	}
+	if err := validateCall(opening.Value, names, exprNormal, true, false); err != nil {
 		return err
 	}
 	if opening.Kind == "assign" {
@@ -88,8 +105,94 @@ func Validate(rule Rule) error {
 		}
 		names[opening.Name] = true
 	}
+	if opening.Guard != nil {
+		if opening.Value.Text != "Event" {
+			return invalid(opening.At, "when guard is only valid on Event()")
+		}
+		if err := validateExpr(opening.Guard, names, false, exprGuard); err != nil {
+			return err
+		}
+	}
 	_, err := validateBlock(rule.Body[start+1:], names, 0, 0)
 	return err
+}
+
+type exprMode int
+
+const (
+	exprNormal exprMode = iota
+	exprPure
+	exprGuard
+)
+
+func validateSelect(s Statement, names map[string]bool, loops, switches int, opening bool) (bool, error) {
+	if len(s.Arms) == 0 {
+		return false, invalid(s.At, "select needs at least one case")
+	}
+	allRet := true
+	var common map[string]bool
+	for _, arm := range s.Arms {
+		if arm.Wait == nil || arm.Wait.Kind != "call" {
+			return false, invalid(arm.At, "select case expects Event(), Every(), Time(), or Sleep()")
+		}
+		waitName := arm.Wait.Text
+		if opening {
+			if !isTrigger(waitName) {
+				return false, invalid(arm.At, "opening select case expects Event(), Every(), or Time()")
+			}
+		} else {
+			if !isTrigger(waitName) && waitName != "Sleep" {
+				return false, invalid(arm.At, "select case expects Event(), Every(), Time(), or Sleep()")
+			}
+		}
+		if err := validateCall(arm.Wait, names, exprNormal, opening, true); err != nil {
+			return false, err
+		}
+		branch := maps.Clone(names)
+		if arm.Binding != "" {
+			if waitName == "Sleep" {
+				return false, invalid(arm.At, "Sleep cannot bind a variable")
+			}
+			if !variable(arm.Binding) {
+				return false, invalid(arm.At, "invalid variable %q", arm.Binding)
+			}
+			branch[arm.Binding] = true
+		}
+		if arm.Guard != nil {
+			if waitName != "Event" {
+				return false, invalid(arm.At, "when guard is only valid on Event()")
+			}
+			if err := validateExpr(arm.Guard, branch, false, exprGuard); err != nil {
+				return false, err
+			}
+		}
+		if len(arm.Body) == 0 {
+			return false, invalid(arm.At, "expected a nonempty case")
+		}
+		armRet, err := validateBlock(arm.Body, branch, loops, switches+1)
+		if err != nil {
+			return false, err
+		}
+		if !armRet {
+			allRet = false
+			if common == nil {
+				common = branch
+			} else {
+				for name := range common {
+					if !branch[name] {
+						delete(common, name)
+					}
+				}
+			}
+		}
+	}
+	if allRet {
+		return true, nil
+	}
+	if common != nil {
+		maps.Copy(names, common)
+	}
+	return false, nil
 }
 
 func validateBlock(body []Statement, names map[string]bool, loops, switches int) (bool, error) {
@@ -109,9 +212,33 @@ func validateBlock(body []Statement, names map[string]bool, loops, switches int)
 		case "return":
 			returned = true
 			continue
+		case "select":
+			selRet, err := validateSelect(s, names, loops, switches, false)
+			if err != nil {
+				return false, err
+			}
+			if selRet {
+				returned = true
+			}
+			continue
 		}
-		if err := validateExpr(s.Value, names, false, false); err != nil {
+		if err := validateExpr(s.Value, names, false, exprNormal); err != nil {
 			return false, err
+		}
+		if s.Guard != nil {
+			if (s.Kind != "expression" && s.Kind != "assign") || s.Value == nil || s.Value.Kind != "call" || s.Value.Text != "Event" {
+				return false, invalid(s.At, "when guard is only valid on Event()")
+			}
+			guardNames := maps.Clone(names)
+			if s.Kind == "assign" {
+				if !variable(s.Name) {
+					return false, invalid(s.At, "invalid variable %q", s.Name)
+				}
+				guardNames[s.Name] = true
+			}
+			if err := validateExpr(s.Guard, guardNames, false, exprGuard); err != nil {
+				return false, err
+			}
 		}
 		switch s.Kind {
 		case "expression":
@@ -176,7 +303,7 @@ func validateBlock(body []Statement, names map[string]bool, loops, switches int)
 					hasDefault = true
 				}
 				for _, v := range clause.Values {
-					if err := validateExpr(v, names, false, false); err != nil {
+					if err := validateExpr(v, names, false, exprNormal); err != nil {
 						return false, err
 					}
 				}
@@ -215,7 +342,7 @@ func validateBlock(body []Statement, names map[string]bool, loops, switches int)
 	return returned, nil
 }
 
-func validateExpr(x *Expression, names map[string]bool, shorthand, pure bool) error {
+func validateExpr(x *Expression, names map[string]bool, shorthand bool, mode exprMode) error {
 	if x == nil {
 		return fmt.Errorf("missing expression")
 	}
@@ -235,15 +362,15 @@ func validateExpr(x *Expression, names map[string]bool, shorthand, pure bool) er
 			return invalid(x.At, "unknown variable %q", x.Text)
 		}
 	case "call":
-		return validateCall(x, names, pure, false)
+		return validateCall(x, names, mode, false, false)
 	case "binary", "index":
 		if x.Kind == "binary" && precedence[x.Text] == 0 {
 			return invalid(x.At, "unknown operator %q", x.Text)
 		}
-		if err := validateExpr(x.Right, names, false, pure); err != nil {
+		if err := validateExpr(x.Right, names, false, mode); err != nil {
 			return err
 		}
-		return validateExpr(x.Left, names, false, pure)
+		return validateExpr(x.Left, names, false, mode)
 	case "field", "unary":
 		if x.Kind == "field" && !validName(x.Text) {
 			return invalid(x.At, "invalid field %q", x.Text)
@@ -251,7 +378,7 @@ func validateExpr(x *Expression, names map[string]bool, shorthand, pure bool) er
 		if x.Kind == "unary" && x.Text != "+" && x.Text != "-" && x.Text != "not" {
 			return invalid(x.At, "invalid operator %q", x.Text)
 		}
-		return validateExpr(x.Left, names, false, pure)
+		return validateExpr(x.Left, names, false, mode)
 	case "list", "object":
 		keys := map[string]bool{}
 		for _, arg := range x.Arguments {
@@ -259,7 +386,7 @@ func validateExpr(x *Expression, names map[string]bool, shorthand, pure bool) er
 				return invalid(x.At, "duplicate object key %q", arg.Name)
 			}
 			keys[arg.Name] = true
-			if err := validateExpr(arg.Value, names, false, pure); err != nil {
+			if err := validateExpr(arg.Value, names, false, mode); err != nil {
 				return err
 			}
 		}
@@ -282,15 +409,23 @@ func bareArgument(function, key string) bool {
 
 func pureFunction(name string) bool {
 	switch name {
-	case "Has", "Exists", "Device", "Len", "ParseTime", "Min", "Max", "Abs", "Round":
+	case "Has", "Exists", "Device", "Len", "ParseTime", "Duration", "Min", "Max", "Abs", "Round":
 		return true
 	}
 	return false
 }
 
-func validateCall(x *Expression, names map[string]bool, pure, opening bool) error {
+func guardFunction(name string) bool {
+	return pureFunction(name) || name == "State" || name == "Devices" || name == "LocalTime" || name == "Now"
+}
+
+func validateCall(x *Expression, names map[string]bool, mode exprMode, opening, inSelect bool) error {
 	keys := map[string]bool{}
 	positional := 0
+	argMode := mode
+	if opening {
+		argMode = exprPure
+	}
 	for _, arg := range x.Arguments {
 		if arg.Name == "" {
 			if len(keys) > 0 {
@@ -303,18 +438,24 @@ func validateCall(x *Expression, names map[string]bool, pure, opening bool) erro
 			}
 			keys[arg.Name] = true
 		}
-		if err := validateExpr(arg.Value, names, bareArgument(x.Text, arg.Name), pure || opening); err != nil {
+		if err := validateExpr(arg.Value, names, bareArgument(x.Text, arg.Name), argMode); err != nil {
 			return err
 		}
 	}
 	bad := func(want string) error { return invalid(x.At, "%s expects %s", x.Text, want) }
-	if pure && !opening && !pureFunction(x.Text) {
+	if mode == exprPure && !opening && !pureFunction(x.Text) {
 		return invalid(x.At, "%s cannot run before the opening match", x.Text)
+	}
+	if mode == exprGuard && !guardFunction(x.Text) {
+		return invalid(x.At, "%s cannot run inside a when guard", x.Text)
 	}
 	switch x.Text {
 	case "Event":
 		if opening && keys["timeout"] {
 			return invalid(x.At, "opening Event cannot set timeout")
+		}
+		if inSelect && keys["timeout"] {
+			return invalid(x.At, "use case Sleep(...) instead of timeout= inside select")
 		}
 		if keys["device"] && (keys["service_id"] || keys["device_id"] || keys["service_name"] || keys["device_name"]) {
 			return bad("device= or separate service and device selectors")
@@ -366,11 +507,11 @@ func validateCall(x *Expression, names map[string]bool, pure, opening bool) erro
 		if positional != 0 || len(keys) != 2 || !(keys["service_id"] && keys["device_id"] || keys["service_name"] && keys["device_name"]) {
 			return bad("a service/device ID pair or a service/device name pair")
 		}
-	case "Now":
+	case "Now", "LocalTime":
 		if positional != 0 || len(keys) > 0 {
 			return bad("no arguments")
 		}
-	case "Exists", "Every", "State", "Sleep", "Len", "ParseTime", "Abs", "Round":
+	case "Exists", "Every", "State", "Sleep", "Len", "ParseTime", "Duration", "Abs", "Round":
 		if positional != 1 || len(keys) > 0 {
 			return bad("one positional argument")
 		}
@@ -392,6 +533,9 @@ func Format(rule Rule) (string, error) {
 	var out strings.Builder
 	if rule.Mode != "" {
 		fmt.Fprintf(&out, "rule.mode = %q\n", rule.Mode)
+	}
+	if rule.Scope != "" {
+		fmt.Fprintf(&out, "rule.scope = %q\n", rule.Scope)
 	}
 	if rule.Concurrency != 0 {
 		fmt.Fprintf(&out, "rule.concurrency = %d\n", rule.Concurrency)
@@ -416,11 +560,15 @@ func formatBlock(out *strings.Builder, body []Statement, depth int) {
 	indent := strings.Repeat("    ", depth)
 	for _, s := range body {
 		line := func(text string) { out.WriteString(indent + text + "\n") }
+		guardSuffix := ""
+		if s.Guard != nil {
+			guardSuffix = " when " + formatExpr(s.Guard)
+		}
 		switch s.Kind {
 		case "expression":
-			line(formatExpr(s.Value))
+			line(formatExpr(s.Value) + guardSuffix)
 		case "assign":
-			line(s.Name + " = " + formatExpr(s.Value))
+			line(s.Name + " = " + formatExpr(s.Value) + guardSuffix)
 		case "return", "continue", "break":
 			line(s.Kind)
 		case "for":
@@ -455,6 +603,20 @@ func formatBlock(out *strings.Builder, body []Statement, depth int) {
 				}
 				line("    " + header + ":")
 				formatBlock(out, clause.Body, depth+2)
+			}
+		case "select":
+			line("select:")
+			for _, arm := range s.Arms {
+				header := "case "
+				if arm.Binding != "" {
+					header += arm.Binding + " = "
+				}
+				header += formatExpr(arm.Wait)
+				if arm.Guard != nil {
+					header += " when " + formatExpr(arm.Guard)
+				}
+				line("    " + header + ":")
+				formatBlock(out, arm.Body, depth+2)
 			}
 		}
 	}

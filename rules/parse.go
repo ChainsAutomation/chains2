@@ -16,21 +16,32 @@ type Rule struct {
 	Concurrency int
 	Timeout     time.Duration
 	Mode        string // "", "drop", or "restart"
+	Scope       string // "", "rule", "device", or "service"
 	Body        []Statement
 }
 
 type Statement struct {
 	At         Position
-	Kind       string // expression, assign, if, while, for, switch, break, continue, return
+	Kind       string // expression, assign, if, while, for, switch, select, break, continue, return
 	Name       string
 	Value      *Expression
+	Guard      *Expression
 	Body, Else []Statement
 	Cases      []Case
+	Arms       []SelectArm
 }
 
 type Case struct {
 	Values []*Expression // empty for default
 	Body   []Statement
+}
+
+type SelectArm struct {
+	At      Position
+	Binding string
+	Wait    *Expression
+	Guard   *Expression
+	Body    []Statement
 }
 
 type Expression struct {
@@ -207,7 +218,7 @@ func (p *parser) is(s string) bool {
 		return true
 	}
 	switch s {
-	case "rule", "in", "case", "default", "elseif", "else":
+	case "rule", "in", "case", "default", "elseif", "else", "select", "when":
 		return t.kind == "name" && t.text == s
 	}
 	return false
@@ -269,6 +280,12 @@ func parse(name, source string, assignments []Statement) (rule Rule, err error) 
 				fail(value.at, "rule.mode must be \"drop\" or \"restart\"")
 			}
 			rule.Mode = value.text
+		case "scope":
+			value := p.expect("string")
+			if value.text != "rule" && value.text != "device" && value.text != "service" {
+				fail(value.at, "rule.scope must be \"rule\", \"device\", or \"service\"")
+			}
+			rule.Scope = value.text
 		case "concurrency":
 			value := p.expect("number")
 			n, e := strconv.ParseFloat(value.text, 64)
@@ -277,10 +294,21 @@ func parse(name, source string, assignments []Statement) (rule Rule, err error) 
 			}
 			rule.Concurrency = int(n)
 		case "timeout":
-			value := p.expect("number")
-			n, e := strconv.ParseFloat(value.text, 64)
-			d, ok := secondsDuration(n)
-			if e != nil || n <= 0 || !ok || d < 1 {
+			value := p.take()
+			var d time.Duration
+			var ok bool
+			switch value.kind {
+			case "number":
+				n, e := strconv.ParseFloat(value.text, 64)
+				if e == nil && n > 0 {
+					d, ok = secondsDuration(n)
+				}
+			case "string":
+				d, ok = parseDurationString(value.text)
+			default:
+				fail(value.at, "expected number or duration string")
+			}
+			if !ok || d < 1 {
 				fail(value.at, "timeout is outside the supported range")
 			}
 			rule.Timeout = d
@@ -360,6 +388,28 @@ func (p *parser) statement() Statement {
 			}
 			p.expect("dedent")
 			return Statement{At: t.at, Kind: "switch", Value: value, Cases: cases}
+		case "select":
+			p.take()
+			p.expect(":")
+			p.expect("newline")
+			p.expect("indent")
+			var arms []SelectArm
+			for !p.is("dedent") {
+				caseTok := p.expect("case")
+				var binding string
+				if p.peek().kind == "name" && p.tokens[p.index+1].kind == "=" {
+					binding = p.take().text
+					p.take()
+				}
+				waitExpr := p.expression(1)
+				var guard *Expression
+				if p.accept("when") {
+					guard = p.expression(1)
+				}
+				arms = append(arms, SelectArm{At: caseTok.at, Binding: binding, Wait: waitExpr, Guard: guard, Body: p.suite()})
+			}
+			p.expect("dedent")
+			return Statement{At: t.at, Kind: "select", Arms: arms}
 		case "return", "break", "continue":
 			p.take()
 			p.expect("newline")
@@ -369,13 +419,21 @@ func (p *parser) statement() Statement {
 			p.take()
 			p.take()
 			value := p.expression(1)
+			var guard *Expression
+			if p.accept("when") {
+				guard = p.expression(1)
+			}
 			p.expect("newline")
-			return Statement{At: t.at, Kind: "assign", Name: t.text, Value: value}
+			return Statement{At: t.at, Kind: "assign", Name: t.text, Value: value, Guard: guard}
 		}
 	}
 	value := p.expression(1)
+	var guard *Expression
+	if p.accept("when") {
+		guard = p.expression(1)
+	}
 	p.expect("newline")
-	return Statement{At: t.at, Kind: "expression", Value: value}
+	return Statement{At: t.at, Kind: "expression", Value: value, Guard: guard}
 }
 
 func (p *parser) branch(t lexeme) Statement {
@@ -399,6 +457,24 @@ func secondsDuration(seconds float64) (time.Duration, bool) {
 		return 0, false
 	}
 	return time.Duration(math.Round(seconds * float64(time.Second))), true
+}
+
+func parseDurationString(raw string) (time.Duration, bool) {
+	d, err := time.ParseDuration(raw)
+	if err != nil || d < 0 || d > time.Duration(maxDurationSeconds)*time.Second {
+		return 0, false
+	}
+	return d, true
+}
+
+func durationValue(v any) (time.Duration, bool) {
+	if s, ok := v.(string); ok {
+		return parseDurationString(s)
+	}
+	if n, ok := number(v); ok {
+		return secondsDuration(n)
+	}
+	return 0, false
 }
 
 func (p *parser) expression(minimum int) *Expression {

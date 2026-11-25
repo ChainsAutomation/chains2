@@ -33,8 +33,20 @@ func (e *execution) statement(s Statement) error {
 		return errReturn
 	case "while":
 		return e.loop(s)
+	case "select":
+		return e.execSelect(s)
 	}
-	value, err := e.expr(s.Value)
+	var value any
+	var err error
+	if s.Guard != nil && s.Value != nil && s.Value.Kind == "call" && s.Value.Text == "Event" {
+		binding := ""
+		if s.Kind == "assign" {
+			binding = s.Name
+		}
+		value, err = e.callEvent(s.Value, binding, s.Guard)
+	} else {
+		value, err = e.expr(s.Value)
+	}
 	if err != nil {
 		return fmt.Errorf("%d:%d: %w", s.At.Line, s.At.Column, err)
 	}

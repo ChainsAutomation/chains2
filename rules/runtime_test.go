@@ -706,3 +706,171 @@ Action("seen", device=light)
 		t.Fatal("expected Prepare to reject DeviceRef captured in device_class selector")
 	}
 }
+
+func TestOpeningSelectBranchesAndPrecedence(t *testing.T) {
+	// Arm 0 is untyped (catch-all bucket), arm 1 is typed ("lamp.on"), arm 2 is typed ("bedtime").
+	// A "lamp.on" event with device_class=light matches both arm 0 and arm 1; arm 0 must win deterministically!
+	r, h := captureRuntime(t, `
+select:
+    case ev = Event(device_class=light) when ev.data.priority == true:
+        branch = "catchall_first"
+    case ev = Event(type="lamp.on"):
+        branch = "typed_second"
+    case Event(type="bedtime"):
+        Action("sleep_now", device=Device(service_id=test, device_id=test))
+        return
+Action(branch, device=Device(service_id=test, device_id=test))
+`)
+	dispatchEvent(r, "lamp.on", "first", map[string]any{"priority": true})
+	if got := receiveInvocation(t, h); got.name != "catchall_first" {
+		t.Fatalf("expected source-order arm 0 to win, got %+v", got)
+	}
+	dispatchEvent(r, "lamp.on", "first", map[string]any{"priority": false})
+	if got := receiveInvocation(t, h); got.name != "typed_second" {
+		t.Fatalf("expected arm 1 when arm 0 guard is false, got %+v", got)
+	}
+	dispatchEvent(r, "bedtime", "first", nil)
+	if got := receiveInvocation(t, h); got.name != "sleep_now" {
+		t.Fatalf("expected arm 2, got %+v", got)
+	}
+	select {
+	case extra := <-h.calls:
+		t.Fatalf("unexpected extra invocation: %+v", extra)
+	case <-time.After(40 * time.Millisecond):
+	}
+}
+
+func TestMidRuleSelectRacesEventsAndSleep(t *testing.T) {
+	r, h := captureRuntime(t, `
+rule.concurrency = 2
+rule.timeout = "5s"
+ev = Event(type="start")
+select:
+    case a = Event(type="cancel"):
+        Action("cancelled", device=ev.device, value=a.data.who)
+    case b = Event(type="done"):
+        Action("done", device=ev.device, value=b.data.who)
+    case Sleep("60ms"):
+        Action("timeout", device=ev.device)
+`)
+	// Case 1: Event wins before Sleep; sibling wait is cleaned up.
+	dispatchEvent(r, "start", "first", nil)
+	waitForWaiters(t, r, "cancel", 1)
+	dispatchEvent(r, "cancel", "first", map[string]any{"who": "user"})
+	if got := receiveInvocation(t, h); got.name != "cancelled" || got.args["value"] != "user" {
+		t.Fatalf("got %+v", got)
+	}
+	waitForWaiters(t, r, "done", 0)
+	dispatchEvent(r, "done", "first", map[string]any{"who": "late"})
+
+	// Case 2: Sleep wins when no event arrives.
+	dispatchEvent(r, "start", "second", nil)
+	if got := receiveInvocation(t, h); got.name != "timeout" {
+		t.Fatalf("expected sleep arm to win, got %+v", got)
+	}
+	waitForWaiters(t, r, "cancel", 0)
+	waitForWaiters(t, r, "done", 0)
+}
+
+func TestWhenGuardPreventsFalseRestartAndFiltersMidRuleWait(t *testing.T) {
+	r, h := captureRuntime(t, `
+rule.mode = "restart"
+rule.timeout = "5s"
+ev = Event(type="humidity") when ev.data.value >= 70 and State(ev.device).power == false
+Sleep("70ms")
+Action("fan_on", device=ev.device, value=ev.data.value)
+`)
+	// "first/shared" has State.power == false in captureHost.
+	dispatchEvent(r, "humidity", "first", map[string]any{"value": 75})
+	time.Sleep(25 * time.Millisecond)
+	// Below threshold -> must NOT cancel or restart the in-flight run!
+	dispatchEvent(r, "humidity", "first", map[string]any{"value": 45})
+	// "second/shared" has State.power == true -> State guard fails, must NOT restart!
+	dispatchEvent(r, "humidity", "second", map[string]any{"value": 80})
+
+	got := receiveInvocation(t, h)
+	if got.name != "fan_on" || got.args["value"] != float64(75) {
+		t.Fatalf("expected original guarded run to survive, got %+v", got)
+	}
+
+	// Mid-rule standalone when guard keeps waiting until condition is true.
+	r2, h2 := captureRuntime(t, `
+rule.timeout = "5s"
+Event(type="begin")
+ev = Event(type="sample") when ev.data.ok == true
+Action("accepted", device=ev.device, value=ev.data.n)
+`)
+	dispatchEvent(r2, "begin", "first", nil)
+	waitForWaiters(t, r2, "sample", 1)
+	dispatchEvent(r2, "sample", "first", map[string]any{"ok": false, "n": 1})
+	dispatchEvent(r2, "sample", "first", map[string]any{"ok": true, "n": 2})
+	if got := receiveInvocation(t, h2); got.name != "accepted" || got.args["value"] != float64(2) {
+		t.Fatalf("mid-rule guard got %+v", got)
+	}
+}
+
+func TestRuleScopeDeviceIndependentRestarts(t *testing.T) {
+	r, h := captureRuntime(t, `
+rule.mode = "restart"
+rule.scope = "device"
+rule.timeout = "5s"
+ev = Event(type="motion")
+Sleep("70ms")
+Action("off", device=ev.device, value=ev.data.seq)
+`)
+	dispatchEvent(r, "motion", "first", map[string]any{"seq": 1})
+	dispatchEvent(r, "motion", "second", map[string]any{"seq": 10})
+	time.Sleep(25 * time.Millisecond)
+	// Restart only "first/shared"; "second/shared" must finish untouched!
+	dispatchEvent(r, "motion", "first", map[string]any{"seq": 2})
+
+	seen := map[string]float64{}
+	for range 2 {
+		got := receiveInvocation(t, h)
+		seen[got.ref.ServiceID] = got.args["value"].(float64)
+	}
+	if seen["first"] != 2 || seen["second"] != 10 {
+		t.Fatalf("expected first=2 and second=10, got %v", seen)
+	}
+	select {
+	case extra := <-h.calls:
+		t.Fatalf("cancelled scoped run unexpectedly fired: %+v", extra)
+	case <-time.After(80 * time.Millisecond):
+	}
+}
+
+func TestLocalTimeAndDurationStrings(t *testing.T) {
+	zone, err := time.LoadLocation("Asia/Tokyo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rule, err := Parse("clock", `
+rule.timeout = "5s"
+Event(type="tick")
+t = LocalTime()
+Sleep("15ms")
+missed = Event(type="never", timeout="15ms")
+if missed == null and Duration("2m30s") == 150 and t.hour >= 0 and t.hour <= 23 and t.weekday >= 0 and t.weekday <= 6:
+    Action("ok", device=Device(service_id=test, device_id=test), value=t.hour)
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := captureHost{calls: make(chan invocation, 4)}
+	r, err := New(context.Background(), host, Calendar{Zone: zone}, slog.New(slog.NewTextHandler(io.Discard, nil)), []Rule{rule})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	expectedHour := float64(time.Now().In(zone).Hour())
+	dispatchEvent(r, "tick", "test", nil)
+	got := receiveInvocation(t, host)
+	if got.name != "ok" {
+		t.Fatalf("unexpected invocation: %+v", got)
+	}
+	// Handle midnight boundary tolerance.
+	hour := got.args["value"].(float64)
+	if hour != expectedHour && hour != float64(time.Now().In(zone).Hour()) {
+		t.Fatalf("LocalTime().hour = %v, want %v", hour, expectedHour)
+	}
+}
